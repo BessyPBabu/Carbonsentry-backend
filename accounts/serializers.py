@@ -119,16 +119,18 @@ class AddUserSerializer(serializers.ModelSerializer):
 
         password = validated_data.pop("password", None)
         temp_password = None
+        must_change = False
 
         if not password:
             temp_password = generate_temp_password()
             password = temp_password
+            must_change = True
 
         try:
             user = User.objects.create_user(
                 organization=organization,
                 password=password,
-                must_change_password=bool(temp_password),
+                must_change_password=must_change,
                 **validated_data,
             )
 
@@ -193,6 +195,10 @@ class EditUserSerializer(serializers.ModelSerializer):
                 validate_strong_password(password)
                 instance.set_password(password)
                 instance.must_change_password = False
+
+            is_active = validated_data.pop('is_active', None)
+            if is_active is not None:
+                instance.is_active = is_active
 
             for attr, val in validated_data.items():
                 setattr(instance, attr, val)
