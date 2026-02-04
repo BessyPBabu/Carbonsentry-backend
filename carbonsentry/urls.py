@@ -16,13 +16,11 @@ Including another URLconf
 """
 
 from django.contrib import admin
-from django.urls import path
+from django.urls import path,include
 
 urlpatterns = [
     path("admin/", admin.site.urls),
-<<<<<<< Updated upstream
-=======
+
     path("api/accounts/", include("accounts.urls")),
     path('api/vendors/', include('vendors.urls')),
->>>>>>> Stashed changes
 ]
