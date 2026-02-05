@@ -20,7 +20,7 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
 
         user = authenticate(
             request=self.context.get("request"),
-            email=email,
+            username=email,
             password=password,
         )
 

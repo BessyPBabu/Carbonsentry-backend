@@ -131,7 +131,10 @@ class AddUserSerializer(serializers.ModelSerializer):
                 organization=organization,
                 password=password,
                 must_change_password=must_change,
-                **validated_data,
+                email=validated_data.pop("email"),
+                full_name=validated_data.get("full_name", ""),
+                role=validated_data.get("role"),
+                is_active=True,
             )
 
             if temp_password:
@@ -172,6 +175,7 @@ class EditUserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ["full_name", "email", "role", "is_active", "password"]
+        read_only_fields = ["email"]
 
     def validate_email(self, value):
         value = value.lower().strip()
@@ -196,9 +200,8 @@ class EditUserSerializer(serializers.ModelSerializer):
                 instance.set_password(password)
                 instance.must_change_password = False
 
-            is_active = validated_data.pop('is_active', None)
-            if is_active is not None:
-                instance.is_active = is_active
+            if 'is_active' in validated_data:
+                instance.is_active = validated_data.pop('is_active')
 
             for attr, val in validated_data.items():
                 setattr(instance, attr, val)

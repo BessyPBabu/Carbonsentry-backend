@@ -103,7 +103,7 @@ class Vendor(models.Model):
     last_updated = models.DateTimeField(auto_now=True)
 
     class Meta:
-        db_table = "vendors"
+        db_table = "vendor"
         unique_together = ("organization", "contact_email")
         indexes = [
             models.Index(fields=["organization", "compliance_status"]),

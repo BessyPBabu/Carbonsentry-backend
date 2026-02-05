@@ -30,7 +30,7 @@ class VendorBulkUploadView(APIView):
         success_count = 0
         failure_count = 0
         error_summary = []
-        created_vendors = []  # NEW: Track created vendors
+        created_vendors = []  
 
         bulk_upload = VendorBulkUpload.objects.create(
             organization=organization,

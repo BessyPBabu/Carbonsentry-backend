@@ -123,11 +123,8 @@ AUTH_PASSWORD_VALIDATORS = [
 # https://docs.djangoproject.com/en/6.0/topics/i18n/
 
 LANGUAGE_CODE = "en-us"
-
 TIME_ZONE = os.getenv("DJANGO_TIME_ZONE", "UTC")
-
 USE_I18N = True
-
 USE_TZ = True
 
 
@@ -157,6 +154,7 @@ SIMPLE_JWT = {
     'AUTH_HEADER_TYPES': ('Bearer',),
 }
 
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 
 EMAIL_TIMEOUT = 10
 EMAIL_SUBJECT_PREFIX = "[CarbonSentry] "
@@ -166,15 +164,21 @@ FRONTEND_URL = os.getenv(
     "http://localhost:5173"
 )
 
-# Email settings
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend' 
-EMAIL_HOST = os.getenv("EMAIL_HOST", "smtp.gmail.com")
-EMAIL_PORT = 587
-EMAIL_USE_TLS = True
-EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER")
-EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD")
-DEFAULT_FROM_EMAIL = os.getenv(
-        "DEFAULT_FROM_EMAIL",
-        "CarbonSentry <apoorvaanna08@gmail.com>"
-    )
+EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 
+if ENVIRONMENT == "development":
+    EMAIL_HOST = "localhost"
+    EMAIL_PORT = 1025
+    EMAIL_USE_TLS = False
+    EMAIL_USE_SSL = False
+    DEFAULT_FROM_EMAIL = "CarbonSentry <no-reply@carbonsentry.local>"
+else:
+    EMAIL_HOST = "smtp.gmail.com"
+    EMAIL_PORT = 587
+    EMAIL_USE_TLS = True
+    EMAIL_HOST_USER = os.getenv(
+        "EMAIL_HOST_USER",
+        "apoorvaanna08@gmail.com"
+    )
+    EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD")
+    DEFAULT_FROM_EMAIL = "CarbonSentry <apoorvaanna08@gmail.com>"
