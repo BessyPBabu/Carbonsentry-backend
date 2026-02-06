@@ -16,7 +16,6 @@ class UploadTokenService:
         try:
             token = secrets.token_urlsafe(32)
             expiry = timezone.now() + timedelta(hours=cls.EXPIRY_HOURS)
-
             document.upload_token = token
             document.upload_token_expires_at = expiry
             document.save(update_fields=["upload_token", "upload_token_expires_at"])
