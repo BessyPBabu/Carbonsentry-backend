@@ -11,6 +11,7 @@ from .auth_views import (
 
 from .views import (
     OrganizationRegisterView,
+    VerifyOrganizationEmailView,
     OrganizationMeView,
     UserMeView,
     UserListView,
@@ -29,6 +30,7 @@ urlpatterns = [
     path("auth/password/change/", ForceChangePasswordView.as_view(), name="password-change"),
 
     path("organizations/register/", OrganizationRegisterView.as_view(), name="organization-register"),
+    path("organizations/verify-email/<str:token>/", VerifyOrganizationEmailView.as_view(), name="organization-verify-email"),
     path("organizations/me/", OrganizationMeView.as_view(), name="organization-me"),
 
     path("users/me/", UserMeView.as_view(), name="user-me"),

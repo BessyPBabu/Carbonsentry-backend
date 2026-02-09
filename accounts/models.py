@@ -10,6 +10,9 @@ class Organization(models.Model):
     industry = models.CharField(max_length=100)
     country = models.CharField(max_length=100)
     primary_email = models.EmailField(db_index=True)
+    is_verified = models.BooleanField(default=False, db_index=True)
+    email_verification_token = models.CharField(max_length=255, null=True, blank=True)
+    email_verified_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
@@ -18,6 +21,7 @@ class Organization(models.Model):
             models.Index(fields=["name"]),
             models.Index(fields=["industry"]),
             models.Index(fields=["country"]),
+            models.Index(fields=["is_verified"]),
         ]
 
     def __str__(self):
@@ -58,6 +62,7 @@ class UserManager(BaseUserManager):
         extra_fields.setdefault("is_staff", True)
         extra_fields.setdefault("is_superuser", True)
         extra_fields.setdefault("role", "admin")
+        extra_fields.setdefault("is_active", True)
 
         if extra_fields.get("is_staff") is not True:
             raise ValueError("Superuser must have is_staff=True")
@@ -73,9 +78,9 @@ class UserManager(BaseUserManager):
 
 class User(AbstractBaseUser, PermissionsMixin):
     class Role(models.TextChoices):
-        ADMIN = "admin"
-        OFFICER = "officer"
-        VIEWER = "viewer"
+        ADMIN = "admin", "Admin"
+        OFFICER = "officer", "Compliance Officer"
+        VIEWER = "viewer", "Viewer"
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     organization = models.ForeignKey(
         Organization,
@@ -90,7 +95,7 @@ class User(AbstractBaseUser, PermissionsMixin):
         db_index=True,
     )
 
-    is_active = models.BooleanField(default=True, db_index=True)
+    is_active = models.BooleanField(default=False, db_index=True)
     is_staff = models.BooleanField(default=False)
     must_change_password = models.BooleanField(default=False)
     password_changed_at = models.DateTimeField(null=True, blank=True)
