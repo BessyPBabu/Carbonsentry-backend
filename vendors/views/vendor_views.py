@@ -3,7 +3,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
-from vendors.models import Vendor, Document,Industry, IndustryRequiredDocument
+from vendors.models import Vendor, Document, Industry, IndustryRequiredDocument
 from vendors.serializers.vendor_serializers import VendorListSerializer, VendorDetailSerializer
 from vendors.serializers.document_serializers import DocumentListSerializer
 from django.db import transaction
@@ -17,7 +17,7 @@ class VendorListCreateView(APIView):
     def get(self, request):
         vendors = Vendor.objects.filter(
             organization=request.user.organization
-        )
+        ).select_related('industry')
 
         logger.info("Vendor list fetched", extra={"count": vendors.count()})
 
@@ -52,6 +52,7 @@ class VendorListCreateView(APIView):
             
             if errors:
                 return Response(errors, status=status.HTTP_400_BAD_REQUEST)
+            
             try:
                 industry = Industry.objects.get(id=industry_id)
             except Industry.DoesNotExist:
@@ -59,6 +60,7 @@ class VendorListCreateView(APIView):
                     {"industry": ["Invalid industry selected"]},
                     status=status.HTTP_400_BAD_REQUEST
                 )
+            
             if Vendor.objects.filter(
                 organization=request.user.organization,
                 contact_email=contact_email
@@ -94,38 +96,93 @@ class VendorListCreateView(APIView):
                     Document.objects.bulk_create(documents)
 
                 logger.info(
-                    f"Vendor created: {vendor.name} with {len(documents)} documents",
+                    "Vendor created successfully",
                     extra={
                         "vendor_id": str(vendor.id),
                         "document_count": len(documents),
                     }
                 )
+            
             serializer = VendorDetailSerializer(vendor)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
 
         except Exception as e:
-            logger.exception(f"Vendor creation failed: {str(e)}")
+            logger.exception("Vendor creation failed")
             return Response(
                 {"detail": "Failed to create vendor"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
 
+class VendorSendEmailsView(APIView):
+    """Separate view for sending emails to vendors"""
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        vendor_ids = request.data.get('vendor_ids', [])
+        
+        if not vendor_ids:
+            return Response(
+                {"error": "No vendors selected"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        vendors = Vendor.objects.filter(
+            id__in=vendor_ids,
+            organization=request.user.organization
+        )
+        
+        if not vendors.exists():
+            return Response(
+                {"error": "No valid vendors found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        try:
+            from vendors.services.email_campaign_service import EmailCampaignService
+            EmailCampaignService.run(
+                organization=request.user.organization,
+                vendors=list(vendors),
+            )
+            
+            logger.info(
+                "Emails sent successfully",
+                extra={
+                    "vendor_count": vendors.count(),
+                    "user": request.user.email
+                }
+            )
+            
+            return Response({
+                "message": f"Emails sent to {vendors.count()} vendor(s)",
+                "count": vendors.count()
+            })
+        except Exception as e:
+            logger.exception("Failed to send emails")
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    
 class VendorDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, vendor_id):
         try:
-            vendor = Vendor.objects.get(
+            vendor = Vendor.objects.select_related('industry').get(
                 id=vendor_id,
                 organization=request.user.organization,
             )
-            serializer = VendorListSerializer(vendor)
+            serializer = VendorDetailSerializer(vendor)
             return Response(serializer.data)
 
         except Vendor.DoesNotExist:
-            logger.warning("Vendor not found", extra={"vendor_id": vendor_id})
-            return Response(status=status.HTTP_404_NOT_FOUND)
+            logger.warning("Vendor not found", extra={"vendor_id": str(vendor_id)})
+            return Response(
+                {"detail": "Vendor not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
 
 
 class VendorDocumentListView(APIView):
@@ -135,6 +192,7 @@ class VendorDocumentListView(APIView):
         documents = Document.objects.filter(
             vendor_id=vendor_id,
             vendor__organization=request.user.organization,
-        )
+        ).select_related('vendor', 'document_type')
+        
         serializer = DocumentListSerializer(documents, many=True)
         return Response(serializer.data)

@@ -7,7 +7,6 @@ from rest_framework import status
 
 from vendors.serializers.bulk_upload_serializers import VendorBulkUploadSerializer
 from vendors.services.csv_parser import parse_csv, CsvParsingError
-
 from vendors.models import VendorBulkUpload
 
 logger = logging.getLogger("vendors.bulk_upload_view")
@@ -21,7 +20,6 @@ class VendorBulkUploadView(APIView):
         serializer.is_valid(raise_exception=True)
 
         csv_file = serializer.validated_data["csv_file"]
-        send_emails = serializer.validated_data.get("send_emails", False)
 
         user = request.user
         organization = user.organization
@@ -30,7 +28,8 @@ class VendorBulkUploadView(APIView):
         success_count = 0
         failure_count = 0
         error_summary = []
-        created_vendors = []  
+
+        created_vendor_ids = []
 
         bulk_upload = VendorBulkUpload.objects.create(
             organization=organization,
@@ -65,22 +64,25 @@ class VendorBulkUploadView(APIView):
             total_rows += 1
 
             try:
-                
                 from vendors.services.industry_mapper import get_or_create_industry
-                industry = get_or_create_industry(row.get("industry", ""))
+                from vendors.services.vendor_creator import (
+                    VendorCreatorService,
+                    VendorCreationError,
+                )
 
-                from vendors.services.vendor_creator import VendorCreatorService,VendorCreationError
+                industry = get_or_create_industry(row.get("industry", ""))
 
                 vendor = VendorCreatorService.create_vendor(
                     organization=organization,
                     data=row,
                     industry=industry,
                 )
-                success_count += 1
-                created_vendors.append(vendor)  
+
+                if vendor:
+                    success_count += 1
+                    created_vendor_ids.append(str(vendor.id))
 
             except ValueError as exc:
-                
                 failure_count += 1
                 error_summary.append(
                     {
@@ -120,40 +122,24 @@ class VendorBulkUploadView(APIView):
         bulk_upload.error_summary = error_summary
         bulk_upload.save()
 
-       
-        if send_emails and created_vendors:
-            try:
-                from vendors.services.email_campaign_service import EmailCampaignService
-                EmailCampaignService.run(organization, created_vendors)
-                logger.info(
-                    "Email campaign executed",
-                    extra={
-                        "bulk_upload_id": str(bulk_upload.id),
-                        "vendor_count": len(created_vendors),
-                    },
-                )
-            except Exception:
-                logger.exception(
-                    "Email campaign failed",
-                    extra={"bulk_upload_id": str(bulk_upload.id)},
-                )
-
         logger.info(
             "Vendor bulk upload completed",
             extra={
                 "bulk_upload_id": str(bulk_upload.id),
-                "total": total_rows,
+                "total_rows": total_rows,
                 "success": success_count,
                 "failure": failure_count,
             },
         )
 
-        response_data = {
-            "bulk_upload_id": str(bulk_upload.id),
-            "total_rows": total_rows,
-            "success_count": success_count,
-            "failure_count": failure_count,
-            "error_summary": error_summary,
-        }
-
-        return Response(response_data, status=status.HTTP_200_OK)
+        return Response(
+            {
+                "bulk_upload_id": str(bulk_upload.id),
+                "total_rows": bulk_upload.total_rows,
+                "success_count": bulk_upload.success_count,
+                "failure_count": bulk_upload.failure_count,
+                "error_summary": bulk_upload.error_summary,
+                "vendor_ids": created_vendor_ids,
+            },
+            status=status.HTTP_200_OK,
+        )

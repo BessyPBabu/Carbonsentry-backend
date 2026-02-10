@@ -12,19 +12,20 @@ class UploadTokenService:
 
     @classmethod
     @transaction.atomic
-    def generate_for_document(cls, document):
+    def generate_for_vendor(cls, vendor):
+        """Generate a single upload token for all vendor documents"""
         try:
             token = secrets.token_urlsafe(32)
             expiry = timezone.now() + timedelta(hours=cls.EXPIRY_HOURS)
-            document.upload_token = token
-            document.upload_token_expires_at = expiry
-            document.save(update_fields=["upload_token", "upload_token_expires_at"])
+            vendor.upload_token = token
+            vendor.upload_token_expires_at = expiry
+            vendor.save(update_fields=["upload_token", "upload_token_expires_at"])
 
             logger.info(
-                "Upload token generated",
+                "Upload token generated for vendor",
                 extra={
-                    "document_id": str(document.id),
-                    "vendor_id": str(document.vendor_id),
+                    "vendor_id": str(vendor.id),
+                    "token": token[:10] + "...",
                 },
             )
 

@@ -3,7 +3,7 @@ from collections import defaultdict
 from django.conf import settings
 from django.db import transaction
 
-from vendors.models import Document
+from vendors.models import Document, Vendor
 from vendors.models import EmailCampaign
 from vendors.models import EmailDispatch
 from vendors.services.upload_token_services import UploadTokenService
@@ -26,24 +26,24 @@ class EmailCampaignService:
                 organization=organization,
                 industry=industry,
                 subject=f"Carbon Compliance Documents Required – {industry.name}",
-                body_template="Please upload the following documents:\n\n{LINKS}",
+                body_template="Please upload the following documents:\n\n{DOCUMENT_LIST}\n\nUpload Link: {UPLOAD_LINK}",
             )
 
             for vendor in vendor_list:
                 pending_docs = Document.objects.filter(vendor=vendor, status="pending")
-                links = []
-
-                for doc in pending_docs:
-                    token = UploadTokenService.generate_for_document(doc)
-                    links.append(
-                        f"- {doc.document_type.name}: "
-                        f"{settings.FRONTEND_URL}/upload/{token}"
+                
+                if not pending_docs.exists():
+                    logger.info(
+                        "Skipping vendor - no pending documents",
+                        extra={"vendor_id": str(vendor.id)}
                     )
-
-                if not links:
                     continue
-
-                body = campaign.body_template.replace("{LINKS}", "\n".join(links))
+                
+                token = UploadTokenService.generate_for_vendor(vendor)
+                doc_list = "\n".join([f"- {doc.document_type.name}" for doc in pending_docs])
+                
+                upload_link = f"{settings.FRONTEND_URL}/upload/{token}"
+                body = cls._generate_email_body(vendor, doc_list, upload_link)
 
                 try:
                     EmailService.send(
@@ -58,6 +58,16 @@ class EmailCampaignService:
                         recipient_email=vendor.contact_email,
                         status="sent",
                     )
+                    
+                    logger.info(
+                        "Email sent successfully",
+                        extra={
+                            "vendor_id": str(vendor.id),
+                            "email": vendor.contact_email,
+                            "document_count": pending_docs.count()
+                        }
+                    )
+                    
                 except Exception as e:
                     logger.error(
                         "Email send failed",
@@ -75,50 +85,50 @@ class EmailCampaignService:
                         error_message=str(e),
                     )
 
-                    
     @classmethod
-    def _generate_email_body(cls, vendor, document_links):
-        
+    def _generate_email_body(cls, vendor, document_list, upload_link):
+        body = f"""Dear {vendor.name} Team,
 
-        body = f"""
-                Dear {vendor.name} Team,
+Greetings from CarbonSentry Compliance Platform!
 
-                Greetings from CarbonSentry Compliance Platform!
+We are reaching out to request the submission of essential carbon compliance documents 
+for your organization. As part of our vendor compliance verification process, we require 
+the following documents to be uploaded at your earliest convenience.
 
-                We are reaching out to request the submission of essential carbon compliance documents 
-                for your organization. As part of our vendor compliance verification process, we require 
-                the following documents to be uploaded at your earliest convenience.
+REQUIRED DOCUMENTS:
+─────────────────────────────────────────────────────────────
+{document_list}
+─────────────────────────────────────────────────────────────
 
-                REQUIRED DOCUMENTS:
-                ─────────────────────────────────────────────────────────────
-                {document_links}
-                ─────────────────────────────────────────────────────────────
+UPLOAD LINK:
+{upload_link}
 
-                IMPORTANT INFORMATION:
-                - Each document has a secure, unique upload link
-                - Links are valid for 72 hours from the time of this email
-                - Each link can only be used once for security purposes
-                - Please ensure documents are in PDF, JPG, PNG, DOC, or DOCX format
-                - Maximum file size: 10MB per document
+IMPORTANT INFORMATION:
+- This secure upload link can be used to upload ALL required documents
+- Link is valid for 72 hours from the time of this email
+- You can upload documents one at a time using the same link
+- Please ensure documents are in PDF, JPG, PNG, DOC, or DOCX format
+- Maximum file size: 10MB per document
 
-                UPLOAD INSTRUCTIONS:
-                1. Click on the link corresponding to each document type
-                2. Select your file using the upload interface
-                3. Confirm the upload
-                4. You will receive a confirmation once the upload is successful
+UPLOAD INSTRUCTIONS:
+1. Click on the upload link above
+2. Select the document type from the dropdown
+3. Choose your file using the upload interface
+4. Confirm the upload
+5. Repeat for each required document
+6. You will receive a confirmation once each upload is successful
 
-                If you encounter any issues or have questions regarding the required documents, 
-                please contact our compliance team at compliance@carbonsentry.com
+If you encounter any issues or have questions regarding the required documents, 
+please contact our compliance team at compliance@carbonsentry.com
 
-                Thank you for your cooperation in maintaining environmental compliance standards.
+Thank you for your cooperation in maintaining environmental compliance standards.
 
-                Best regards,
-                CarbonSentry Compliance Team
+Best regards,
+CarbonSentry Compliance Team
 
-                ─────────────────────────────────────────────────────────────
-                This is an automated message. Please do not reply to this email.
-                For support, contact: compliance@carbonsentry.com
-                ─────────────────────────────────────────────────────────────
-                        """
+─────────────────────────────────────────────────────────────
+This is an automated message. Please do not reply to this email.
+For support, contact: compliance@carbonsentry.com
+─────────────────────────────────────────────────────────────"""
 
         return body.strip()
