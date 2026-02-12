@@ -6,6 +6,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from vendors.models import Document
 from vendors.serializers.public_upload_serializers import VendorPublicUploadSerializer
+from ai_validation.tasks import validate_document_async
 
 logger = logging.getLogger("vendors.public_upload")
 
@@ -39,8 +40,10 @@ class VendorPublicUploadView(APIView):
             serializer.is_valid(raise_exception=True)
             serializer.save()
 
+            validate_document_async.delay(str(document.id))
+            
             logger.info(
-                "Document uploaded successfully",
+                "Document uploaded and validation triggered",
                 extra={
                     "document_id": str(document.id),
                     "vendor_id": str(document.vendor_id),

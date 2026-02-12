@@ -7,6 +7,9 @@ from vendors.models import Vendor, Document,Industry, IndustryRequiredDocument
 from vendors.serializers.vendor_serializers import VendorListSerializer, VendorDetailSerializer
 from vendors.serializers.document_serializers import DocumentListSerializer
 from django.db import transaction
+from django.db.models import Q
+from django.core.paginator import Paginator
+
 
 logger = logging.getLogger("vendors.vendor_views")
 
@@ -17,12 +20,70 @@ class VendorListCreateView(APIView):
     def get(self, request):
         vendors = Vendor.objects.filter(
             organization=request.user.organization
+        ).select_related('industry')
+
+        # Search filter (name or email)
+        search = request.query_params.get('search', '').strip()
+        if search:
+            vendors = vendors.filter(
+                Q(name__icontains=search) |
+                Q(contact_email__icontains=search)
+            )
+
+        # Industry filter
+        industry = request.query_params.get('industry', '').strip()
+        if industry:
+            vendors = vendors.filter(industry_id=industry)
+
+        # Compliance status filter
+        compliance_status = request.query_params.get('compliance_status', '').strip()
+        if compliance_status:
+            vendors = vendors.filter(compliance_status=compliance_status)
+
+        # Risk level filter
+        risk_level = request.query_params.get('risk_level', '').strip()
+        if risk_level:
+            vendors = vendors.filter(risk_level=risk_level)
+
+        # Order by most recently updated
+        vendors = vendors.order_by('-last_updated')
+
+        # Pagination
+        page_number = request.query_params.get('page', 1)
+        page_size = 50
+        
+        try:
+            page_number = int(page_number)
+        except (ValueError, TypeError):
+            page_number = 1
+
+        paginator = Paginator(vendors, page_size)
+        page_obj = paginator.get_page(page_number)
+
+        serializer = VendorListSerializer(page_obj.object_list, many=True)
+        
+        logger.info(
+            "Vendors list fetched",
+            extra={
+                "count": paginator.count,
+                "page": page_number,
+                "total_pages": paginator.num_pages,
+                "filters": {
+                    "search": search,
+                    "industry": industry,
+                    "compliance_status": compliance_status,
+                    "risk_level": risk_level
+                }
+            }
         )
 
-        logger.info("Vendor list fetched", extra={"count": vendors.count()})
-
-        serializer = VendorListSerializer(vendors, many=True)
-        return Response(serializer.data)
+        return Response({
+            'count': paginator.count,
+            'total_pages': paginator.num_pages,
+            'current_page': page_number,
+            'page_size': page_size,
+            'results': serializer.data
+        })
     
     def post(self, request):
         logger.info(

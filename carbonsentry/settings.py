@@ -47,6 +47,7 @@ INSTALLED_APPS = [
     "corsheaders",
     "accounts",
     "vendors",
+    "ai_validation",
 ]
 
 MIDDLEWARE = [
@@ -182,3 +183,14 @@ else:
     )
     EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD")
     DEFAULT_FROM_EMAIL = "CarbonSentry <apoorvaanna08@gmail.com>"
+
+
+CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', default='redis://localhost:6379/0')
+CELERY_RESULT_BACKEND = CELERY_BROKER_URL
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = 'UTC'
+
+
+GEMINI_API_KEY =os.getenv('GEMINI_API_KEY')

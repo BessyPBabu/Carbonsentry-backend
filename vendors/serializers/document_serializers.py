@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from vendors.models import Document
+from ai_validation.models import DocumentValidation
 
 
 class DocumentListSerializer(serializers.ModelSerializer):
@@ -7,27 +8,38 @@ class DocumentListSerializer(serializers.ModelSerializer):
     vendor_name = serializers.CharField(source='vendor.name', read_only=True)
     vendor_id = serializers.UUIDField(source='vendor.id', read_only=True)
     vendor = serializers.SerializerMethodField()
+    validation = serializers.SerializerMethodField()
 
     class Meta:
         model = Document
         fields = [
-            "id",
-            "vendor_id",
-            "vendor_name",
-            "vendor", 
-            "document_type",
-            "status",
-            "uploaded_at",
-            "expiry_date",
-            "file",
+            'id', 
+            'vendor_id',
+            'vendor_name',
+            'document_type',
+            'document_type_name',
+            'file',
+            'status',
+            'expiry_date',
+            'uploaded_at',
+            'validation'
         ]
-    
-    def get_vendor(self, obj):
-        return {
-            "id": str(obj.vendor.id),
-            "name": obj.vendor.name,
-        }
 
+    def get_validation(self, obj):
+        """Get validation info if exists"""
+        try:
+            validation = obj.validation
+            return {
+                'id': str(validation.id),
+                'status': validation.status,
+                'current_step': validation.current_step,
+                'overall_confidence': float(validation.overall_confidence) if validation.overall_confidence else None,
+                'requires_manual_review': validation.requires_manual_review
+            }
+        except DocumentValidation.DoesNotExist:
+            return None
+
+    
 
 class DocumentDetailSerializer(serializers.ModelSerializer):
     document_type = serializers.StringRelatedField()
