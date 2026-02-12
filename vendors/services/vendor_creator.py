@@ -54,12 +54,24 @@ class VendorCreatorService:
             )
 
             if send_emails is True:
-                from vendors.services.email_campaign_service import EmailCampaignService
-
-                EmailCampaignService.run(
-                    organization=organization,
-                    vendors=[vendor],
-                )
+                try:
+                    from vendors.services.email_campaign_service import EmailCampaignService
+                    EmailCampaignService.run(
+                        organization=organization,
+                        vendors=[vendor],
+                    )
+                    logger.info(
+                        "Email sent successfully for new vendor",
+                        extra={"vendor_id": str(vendor.id)}
+                    )
+                except Exception as email_error:
+                    logger.error(
+                        "Failed to send email for new vendor",
+                        extra={
+                            "vendor_id": str(vendor.id),
+                            "error": str(email_error)
+                        }
+                    )
 
             return vendor
 

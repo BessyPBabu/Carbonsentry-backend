@@ -30,9 +30,6 @@ Please verify your email address by clicking the link below:
 
 This link will expire in 24 hours.
 
-After verification, you can log in at:
-{login_link}
-
 Your registered email: {organization.primary_email}
 
 Best regards,

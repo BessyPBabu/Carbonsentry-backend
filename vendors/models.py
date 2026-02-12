@@ -100,6 +100,17 @@ class Vendor(models.Model):
         default="medium",
         db_index=True,
     )
+    upload_token = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+        db_index=True,
+        unique=True,
+    )
+    upload_token_expires_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
     last_updated = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -175,16 +186,6 @@ class Document(models.Model):
         choices=STATUS_CHOICES,
         default="pending",
         db_index=True,
-    )
-    upload_token = models.CharField(
-        max_length=255,
-        null=True,
-        blank=True,
-        db_index=True,
-    )
-    upload_token_expires_at = models.DateTimeField(
-        null=True,
-        blank=True,
     )
     expiry_date = models.DateField(null=True, blank=True)
     uploaded_at = models.DateTimeField(null=True, blank=True)
