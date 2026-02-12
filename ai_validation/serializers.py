@@ -20,13 +20,16 @@ class ExtractedMetadataSerializer(serializers.ModelSerializer):
 
 class DocumentValidationSerializer(serializers.ModelSerializer):
     metadata = ExtractedMetadataSerializer(read_only=True)
+    document_id = serializers.UUIDField(source='document.id', read_only=True)
     document_name = serializers.CharField(source='document.document_type.name', read_only=True)
+    vendor_id = serializers.UUIDField(source='document.vendor.id', read_only=True)
     vendor_name = serializers.CharField(source='document.vendor.name', read_only=True)
     
     class Meta:
         model = DocumentValidation
         fields = [
-            'id', 'document', 'document_name', 'vendor_name',
+            'id', 'document', 'document_id', 'document_name', 
+            'vendor_id', 'vendor_name',
             'status', 'current_step',
             'readability_passed', 'readability_score', 'readability_issues',
             'is_relevant', 'detected_document_type', 'relevance_confidence',
@@ -38,12 +41,14 @@ class DocumentValidationSerializer(serializers.ModelSerializer):
 
 
 class VendorRiskProfileSerializer(serializers.ModelSerializer):
+    vendor_id = serializers.UUIDField(source='vendor.id', read_only=True)
     vendor_name = serializers.CharField(source='vendor.name', read_only=True)
+    vendor_industry = serializers.CharField(source='vendor.industry.name', read_only=True)
     
     class Meta:
         model = VendorRiskProfile
         fields = [
-            'id', 'vendor', 'vendor_name',
+            'id', 'vendor', 'vendor_id', 'vendor_name', 'vendor_industry',
             'risk_level', 'risk_score',
             'total_documents', 'validated_documents', 'flagged_documents',
             'total_co2_emissions', 'exceeds_threshold',
@@ -54,7 +59,7 @@ class VendorRiskProfileSerializer(serializers.ModelSerializer):
 
 class ManualReviewQueueSerializer(serializers.ModelSerializer):
     validation = DocumentValidationSerializer(source='document_validation', read_only=True)
-    assigned_to_name = serializers.CharField(source='assigned_to.full_name', read_only=True)
+    assigned_to_name = serializers.SerializerMethodField()
     
     class Meta:
         model = ManualReviewQueue
@@ -65,6 +70,11 @@ class ManualReviewQueueSerializer(serializers.ModelSerializer):
             'reviewer_notes', 'resolution_decision',
             'created_at', 'resolved_at'
         ]
+    
+    def get_assigned_to_name(self, obj):
+        if obj.assigned_to:
+            return f"{obj.assigned_to.first_name} {obj.assigned_to.last_name}".strip() or obj.assigned_to.email
+        return None
 
 
 class AIAuditLogSerializer(serializers.ModelSerializer):

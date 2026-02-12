@@ -5,4 +5,4 @@ class AiValidationConfig(AppConfig):
     name = 'ai_validation'
 
     def ready(self):
-        import ai_validation.signals  # noqa
+        import ai_validation.signals  

@@ -3,7 +3,8 @@ from vendors.models import Vendor
 
 
 class VendorListSerializer(serializers.ModelSerializer):
-    industry = serializers.StringRelatedField()
+    industry = serializers.CharField(source='industry.name', read_only=True)
+    industry_id = serializers.UUIDField(source='industry.id', read_only=True)
 
     class Meta:
         model = Vendor
@@ -11,13 +12,17 @@ class VendorListSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "industry",
+            "industry_id",
             "country",
+            "contact_email",
             "compliance_status",
             "risk_level",
+            "last_updated",
         ]
 
 class VendorDetailSerializer(serializers.ModelSerializer):
-    industry = serializers.StringRelatedField()
+    industry = serializers.CharField(source='industry.name', read_only=True)
+    industry_id = serializers.UUIDField(source='industry.id', read_only=True)
     
     class Meta:
         model = Vendor
@@ -25,6 +30,7 @@ class VendorDetailSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "industry",
+            "industry_id",
             "country",
             "contact_email",
             "compliance_status",

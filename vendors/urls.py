@@ -17,9 +17,12 @@ from vendors.views.document_views import (
     DocumentDetailView,
 )
 
+from vendors.views.media_views import (  
+    DocumentFileView,
+    DocumentDownloadView,
+)
 
 urlpatterns = [
-    # Bulk upload
     path("bulk-upload/", VendorBulkUploadView.as_view(), name="vendor-bulk-upload"),
     
     # Send emails (must be before <uuid:vendor_id>/ to avoid conflicts)
@@ -41,4 +44,9 @@ urlpatterns = [
     # Documents
     path("documents/", DocumentListView.as_view(), name="documents-list"),
     path("documents/<uuid:document_id>/", DocumentDetailView.as_view(), name="document-detail"),
+
+    path("documents/<uuid:document_id>/file/", DocumentFileView.as_view(), name="document-file"),
+    path("documents/<uuid:document_id>/download/", DocumentDownloadView.as_view(), name="document-download"),
+
+
 ]
