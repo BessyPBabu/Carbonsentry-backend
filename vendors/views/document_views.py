@@ -19,9 +19,7 @@ class DocumentListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        """Get paginated list of documents with filters"""
         try:
-            # Check organization
             if not hasattr(request.user, 'organization') or not request.user.organization:
                 logger.error("User has no organization")
                 return Response(
@@ -30,15 +28,14 @@ class DocumentListView(APIView):
                 )
 
             organization = request.user.organization
-
-            # Base queryset with optimizations
             documents = Document.objects.filter(
                 vendor__organization=organization
             ).select_related(
                 'vendor', 
+                'vendor__organization',
                 'document_type', 
                 'vendor__industry'
-            ).prefetch_related('validation')
+            ).prefetch_related('validation','validation__metadata')
 
             # Apply filters
             status_filter = request.query_params.get('status', '').strip()

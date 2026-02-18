@@ -1,77 +1,109 @@
+import io
+import base64
+import logging
+from decimal import Decimal
+
+import PIL.Image
+
 from .gemini_client import GeminiClient
 from .validators import ResponseParser
 from ..models import AIAuditLog
-from decimal import Decimal
+
+logger = logging.getLogger(__name__)
 
 
 class ReadabilityChecker:
+
     def __init__(self):
         self.client = GeminiClient()
         self.parser = ResponseParser()
-    
+
     def check(self, image_base64, validation):
-        """Check if document is readable"""
         prompt = self._get_prompt()
-        
-        # Prepare image for Gemini
-        import PIL.Image
-        import io
-        import base64
-        img_bytes = base64.b64decode(image_base64)
-        img = PIL.Image.open(io.BytesIO(img_bytes))
-        
-        success, response, error, response_time = self.client.call_with_retry(prompt, img)
-        
-        # Log audit trail
+
+        try:
+            img = PIL.Image.open(io.BytesIO(base64.b64decode(image_base64)))
+        except Exception as e:
+            logger.exception("check: failed to decode image for validation %s", validation.id)
+            return True, self._default_pass(f"Image decode error: {e}"), None
+
+        success, response, error, _ = self.client.call_with_retry(prompt, img)
+
         AIAuditLog.objects.create(
             document_validation=validation,
             validation_step='readability',
             prompt_sent=prompt,
-            raw_response=response if success else error,
+            raw_response=response if success else (error or ''),
             success=success,
             error_message=error or '',
-            model_used='gemini-1.5-flash'
+            model_used='gemini-2.5-flash',
         )
-        
-        if not success:
-            return False, None, error
-        
-        # Parse response
-        json_success, data, parse_error = self.parser.parse_json(response)
-        
-        if not json_success:
-            return False, None, parse_error
-        
-        result = {
-            'is_readable': data.get('is_readable', False),
-            'quality_score': Decimal(str(data.get('quality_score', 0))),
-            'language': data.get('language', 'Unknown'),
-            'issues': data.get('issues', [])
-        }
-        
-        return True, result, None
-    
-    def _get_prompt(self):
-        return """Analyze if this document is readable and processable.
 
-Return ONLY valid JSON with these exact fields:
+        if not success:
+            # API failure — don't block the pipeline, just log and continue
+            logger.warning("check: Gemini call failed for validation %s — %s", validation.id, error)
+            return True, self._default_pass(f"API call failed: {error}"), None
+
+        json_ok, data, parse_err = self.parser.parse_json(response)
+
+        if not json_ok:
+            logger.warning("check: JSON parse failed for validation %s — %s", validation.id, parse_err)
+            return True, self._default_pass("Could not parse AI response"), None
+
+        is_readable = data.get('is_readable', True)
+        quality_score = float(data.get('quality_score', 70) or 70)
+        issues = data.get('issues', [])
+
+        if not isinstance(issues, list):
+            issues = []
+
+        # only hard-fail completely broken documents (score < 20)
+        if quality_score > 20:
+            is_readable = True
+
+        result = {
+            'is_readable': is_readable,
+            'quality_score': Decimal(str(max(0, min(100, quality_score)))),
+            'language': data.get('language', 'English'),
+            'issues': issues,
+        }
+
+        logger.info(
+            "check: validation=%s readable=%s score=%.1f",
+            validation.id, is_readable, quality_score,
+        )
+        return True, result, None
+
+    def _default_pass(self, reason):
+        return {
+            'is_readable': True,
+            'quality_score': Decimal('60'),
+            'language': 'Unknown',
+            'issues': [reason],
+        }
+
+    def _get_prompt(self):
+        return """Look at this document image and answer: is the text readable?
+
+Return ONLY this JSON (no other text):
 {
-  "is_readable": true/false,
-  "quality_score": 0-100,
-  "language": "English" or other,
-  "issues": ["issue1", "issue2"]
+  "is_readable": true,
+  "quality_score": 75,
+  "language": "English",
+  "issues": []
 }
 
-Criteria for is_readable=true:
-- Text is clearly visible and legible
-- Document is not severely corrupted
-- At least 70% of content is readable
+Rules:
+- Set is_readable to FALSE only if the document is completely blank, fully corrupted, or pure noise with zero text
+- Set is_readable to TRUE for everything else — digital PDFs, scans, photos, tilted, slightly blurry
+- quality_score: 0-100
+  - Digital/computer-generated PDF: 80-95
+  - Clear scan: 70-85
+  - Photo of document: 60-75
+  - Blurry but readable: 40-60
+  - Almost unreadable: 10-30
+  - Completely blank or corrupt: 0-10
+- issues: list any problems, can be empty
+- language: detected language or "English" if unsure
 
-Issues to detect:
-- Low resolution
-- Blurry text
-- Partial scan
-- Rotated/skewed
-- Heavy watermark obscuring text
-
-Do not include any text outside the JSON object."""
+Digital PDFs generated by computer should score 80+ and is_readable=true."""

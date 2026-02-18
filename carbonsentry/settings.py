@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 import os
+import ssl
 from pathlib import Path
 from dotenv import load_dotenv
 from datetime import timedelta
@@ -197,12 +198,21 @@ else:
     DEFAULT_FROM_EMAIL = "CarbonSentry <apoorvaanna08@gmail.com>"
 
 
-CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', default='redis://localhost:6379/0')
-CELERY_RESULT_BACKEND = CELERY_BROKER_URL
+REDIS_URL = os.getenv('REDIS_URL')
+
+if REDIS_URL:
+    CELERY_BROKER_URL = REDIS_URL
+    CELERY_RESULT_BACKEND = REDIS_URL
+    print(f"Connected to Redis Cloud")
+else:
+
+    CELERY_TASK_ALWAYS_EAGER = True
+    CELERY_TASK_EAGER_PROPAGATES = True
+    print("Running in sync mode (no Redis)")
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = 'UTC'
-
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 
 GEMINI_API_KEY =os.getenv('GEMINI_API_KEY')

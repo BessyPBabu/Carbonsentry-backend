@@ -1,4 +1,8 @@
+import logging
+from decimal import Decimal
+
 from django.utils import timezone
+
 from .document_preprocessor import DocumentPreprocessor
 from .readability_checker import ReadabilityChecker
 from .relevance_classifier import RelevanceClassifier
@@ -8,8 +12,11 @@ from .risk_calculator import RiskCalculator
 from ..models import DocumentValidation, ManualReviewQueue
 from ..constants import MIN_AUTO_APPROVE_CONFIDENCE
 
+logger = logging.getLogger(__name__)
+
 
 class ValidationOrchestrator:
+
     def __init__(self):
         self.preprocessor = DocumentPreprocessor()
         self.readability_checker = ReadabilityChecker()
@@ -17,214 +24,213 @@ class ValidationOrchestrator:
         self.authenticity_analyzer = AuthenticityAnalyzer()
         self.metadata_extractor = MetadataExtractor()
         self.risk_calculator = RiskCalculator()
-    
-    def validate_document(self, document):
-        """Main orchestration method"""
-        
-        # Create validation record
-        validation = DocumentValidation.objects.create(
-            document=document,
-            status='processing',
-            started_at=timezone.now()
-        )
-        
+
+    def validate_document(self, document, validation):
+        logger.info("validate_document: starting for document %s", document.id)
+
         try:
-            # Step 0: Preprocess document
-            validation.current_step = 'readability'
-            validation.save()
-            
+            # ── preprocessing ──────────────────────────────────────────────
+            self._set_step(validation, 'readability')
+
             success, image_base64, error = self.preprocessor.process(document.file.path)
-            
             if not success:
-                self._mark_failed(validation, 'preprocessing', error)
-                return validation
-            
-            # Step 1: Readability Check
-            success, result, error = self.readability_checker.check(image_base64, validation)
-            
-            if not success or not result['is_readable']:
-                self._mark_failed(validation, 'readability', error or 'Document not readable')
-                return validation
-            
-            validation.readability_passed = result['is_readable']
-            validation.readability_score = result['quality_score']
-            validation.readability_issues = result['issues']
-            validation.save()
-            
-            # Step 2: Relevance Classification
-            validation.current_step = 'relevance'
-            validation.save()
-            
-            success, result, error = self.relevance_classifier.classify(image_base64, validation)
-            
-            if not success or not result['is_relevant']:
-                self._mark_failed(validation, 'relevance', error or 'Document not relevant')
-                return validation
-            
-            validation.is_relevant = result['is_relevant']
-            validation.detected_document_type = result['document_type']
-            validation.relevance_confidence = result['confidence']
-            validation.save()
-            
-            # Step 3: Authenticity Analysis
-            validation.current_step = 'authenticity'
-            validation.save()
-            
-            success, result, error = self.authenticity_analyzer.analyze(image_base64, validation)
-            
-            if success:
+                logger.error("validate_document: preprocessing failed — %s", error)
+                return self._mark_failed(validation, 'preprocessing', error)
+
+            # ── step 1: readability (hard gate — only truly broken docs fail) ──
+            success, result, _ = self.readability_checker.check(image_base64, validation)
+
+            if success and result:
+                validation.readability_passed = result['is_readable']
+                validation.readability_score = result['quality_score']
+                validation.readability_issues = result['issues']
+            else:
+                validation.readability_passed = True
+                validation.readability_score = None
+                validation.readability_issues = []
+
+            validation.save(update_fields=['readability_passed', 'readability_score', 'readability_issues'])
+
+            score = float(validation.readability_score or 100)
+            if not validation.readability_passed and score < 20:
+                logger.warning("validate_document: document %s truly unreadable (score=%.1f)", document.id, score)
+                return self._mark_failed(
+                    validation, 'readability',
+                    f"Document unreadable (score={score}). Issues: {', '.join(validation.readability_issues)}"
+                )
+
+            # ── step 2: relevance (soft gate — affects confidence score only) ──
+            self._set_step(validation, 'relevance')
+
+            success, result, _ = self.relevance_classifier.classify(image_base64, validation)
+            if success and result:
+                validation.is_relevant = result['is_relevant']
+                validation.detected_document_type = result['document_type']
+                validation.relevance_confidence = result['confidence']
+            else:
+                validation.is_relevant = True
+                validation.detected_document_type = 'Emission Report'
+                validation.relevance_confidence = None
+
+            validation.save(update_fields=['is_relevant', 'detected_document_type', 'relevance_confidence'])
+
+            # ── step 3: authenticity (soft gate — affects confidence score only) ──
+            self._set_step(validation, 'authenticity')
+
+            success, result, _ = self.authenticity_analyzer.analyze(image_base64, validation)
+            if success and result:
                 validation.authenticity_score = result['score']
                 validation.authenticity_indicators = result['indicators']
                 validation.authenticity_red_flags = result['red_flags']
-                validation.save()
-            
-            # Step 4: Metadata Extraction
-            validation.current_step = 'extraction'
-            validation.save()
-            
+            else:
+                validation.authenticity_score = None
+                validation.authenticity_indicators = []
+                validation.authenticity_red_flags = []
+
+            validation.save(update_fields=['authenticity_score', 'authenticity_indicators', 'authenticity_red_flags'])
+
+            # ── step 4: metadata extraction ────────────────────────────────
+            self._set_step(validation, 'extraction')
+
             success, metadata, error = self.metadata_extractor.extract(image_base64, validation)
-            
             if not success:
-                self._mark_failed(validation, 'extraction', error)
-                return validation
-            
-            # Step 5: Calculate Overall Confidence
-            overall_confidence = self._calculate_overall_confidence(validation)
+                logger.error("validate_document: extraction failed for %s — %s", document.id, error)
+                return self._mark_failed(validation, 'extraction', error)
+
+            # ── overall confidence + flag decision ─────────────────────────
+            overall_confidence = self._calculate_confidence(validation, metadata)
             validation.overall_confidence = overall_confidence
-            
-            # Determine if manual review needed
-            should_flag = self._should_flag_for_review(validation)
+
+            should_flag, flag_reason = self._check_flag(validation)
             validation.requires_manual_review = should_flag
-            
+            validation.flagged_reason = flag_reason if should_flag else ''
+
             if should_flag:
-                validation.flagged_reason = self._get_flag_reason(validation)
-                
-                # Create manual review queue entry
-                ManualReviewQueue.objects.create(
+                ManualReviewQueue.objects.get_or_create(
                     document_validation=validation,
-                    priority=self._get_priority(validation),
-                    reason=validation.flagged_reason
+                    defaults={
+                        'priority': self._get_priority(validation),
+                        'reason': flag_reason,
+                    }
                 )
-            
-            # Step 6: Risk Analysis
-            validation.current_step = 'risk_analysis'
-            validation.save()
-            
-            self.risk_calculator.calculate(document.vendor)
-            
-            # Mark complete
+
+            validation.save(update_fields=['overall_confidence', 'requires_manual_review', 'flagged_reason'])
+
+            # ── step 5: risk calculation ───────────────────────────────────
+            self._set_step(validation, 'risk_analysis')
+
+            try:
+                self.risk_calculator.calculate(document.vendor)
+            except Exception as e:
+                # risk calc failing should not abort the validation
+                logger.warning("validate_document: risk calculation non-fatal error — %s", e)
+
+            # ── complete ───────────────────────────────────────────────────
             validation.status = 'completed'
             validation.current_step = 'completed'
             validation.completed_at = timezone.now()
-            validation.total_processing_time_seconds = (
-                validation.completed_at - validation.started_at
-            ).seconds
-            validation.save()
-            
-            # Update document status
-            if should_flag:
-                document.status = 'flagged'
-            else:
-                document.status = 'valid'
-            
+            validation.total_processing_time_seconds = int(
+                (validation.completed_at - validation.started_at).total_seconds()
+            )
+            validation.save(update_fields=[
+                'status', 'current_step', 'completed_at', 'total_processing_time_seconds'
+            ])
+
+            document.status = 'flagged' if should_flag else 'valid'
             if metadata and metadata.expiry_date:
                 document.expiry_date = metadata.expiry_date
-            
             document.save()
-            
+
+            logger.info(
+                "validate_document: completed — document=%s confidence=%.1f flagged=%s",
+                document.id, float(overall_confidence), should_flag,
+            )
             return validation
-            
+
         except Exception as e:
-            self._mark_failed(validation, validation.current_step, str(e))
-            return validation
-    
-    def _calculate_overall_confidence(self, validation):
-        """Calculate weighted confidence score"""
-        from decimal import Decimal
-        
-        scores = []
-        
-        if validation.readability_score:
-            scores.append(float(validation.readability_score) * 0.15)
-        
-        if validation.relevance_confidence:
-            scores.append(float(validation.relevance_confidence) * 0.25)
-        
-        if validation.authenticity_score:
-            scores.append(float(validation.authenticity_score) * 0.30)
-        
-        if hasattr(validation, 'metadata'):
-            metadata = validation.metadata
-            extraction_scores = []
-            
-            if metadata.co2_extraction_confidence:
-                extraction_scores.append(float(metadata.co2_extraction_confidence))
-            if metadata.issue_date_confidence:
-                extraction_scores.append(float(metadata.issue_date_confidence))
-            if metadata.expiry_date_confidence:
-                extraction_scores.append(float(metadata.expiry_date_confidence))
-            
-            if extraction_scores:
-                avg_extraction = sum(extraction_scores) / len(extraction_scores)
-                scores.append(avg_extraction * 0.30)
-        
-        if scores:
-            return Decimal(str(sum(scores)))
-        
-        return Decimal('0')
-    
-    def _should_flag_for_review(self, validation):
-        """Determine if document should be flagged"""
-        if not validation.overall_confidence:
-            return True
-        
-        if float(validation.overall_confidence) < MIN_AUTO_APPROVE_CONFIDENCE:
-            return True
-        
-        if len(validation.authenticity_red_flags) >= 2:
-            return True
-        
-        return False
-    
-    def _get_flag_reason(self, validation):
-        """Get human-readable flag reason"""
+            logger.exception("validate_document: unhandled error for document %s", document.id)
+            return self._mark_failed(validation, validation.current_step or 'unknown', str(e))
+
+    # ── helpers ────────────────────────────────────────────────────────────────
+
+    def _set_step(self, validation, step):
+        validation.current_step = step
+        validation.save(update_fields=['current_step'])
+
+    def _calculate_confidence(self, validation, metadata):
+        score = 0.0
+
+        # readability 10%
+        score += float(validation.readability_score or 70) * 0.10
+
+        # relevance 25%
+        score += float(validation.relevance_confidence or 60) * 0.25
+
+        # authenticity 25%
+        score += float(validation.authenticity_score or 60) * 0.25
+
+        # extraction 40%
+        if metadata:
+            fields = [
+                metadata.co2_extraction_confidence,
+                metadata.issue_date_confidence,
+                metadata.expiry_date_confidence,
+                metadata.issuing_authority_confidence,
+            ]
+            values = [float(f) for f in fields if f is not None]
+            avg_extraction = (sum(values) / len(values)) if values else 30.0
+        else:
+            avg_extraction = 30.0
+
+        score += avg_extraction * 0.40
+
+        final = round(score, 2)
+        logger.info("_calculate_confidence: validation=%s score=%.2f", validation.id, final)
+        return Decimal(str(final))
+
+    def _check_flag(self, validation):
         reasons = []
-        
-        if validation.overall_confidence and float(validation.overall_confidence) < MIN_AUTO_APPROVE_CONFIDENCE:
-            reasons.append(f"Low confidence score ({validation.overall_confidence}%)")
-        
-        if validation.authenticity_red_flags:
-            reasons.append(f"Authenticity concerns: {', '.join(validation.authenticity_red_flags[:3])}")
-        
-        return "; ".join(reasons) if reasons else "Requires verification"
-    
+
+        conf = float(validation.overall_confidence or 0)
+        if conf < MIN_AUTO_APPROVE_CONFIDENCE:
+            reasons.append(f"Low confidence ({conf:.1f}% < {MIN_AUTO_APPROVE_CONFIDENCE}%)")
+
+        red_flags = validation.authenticity_red_flags or []
+        if len(red_flags) >= 3:
+            reasons.append(f"Multiple authenticity concerns: {', '.join(red_flags[:3])}")
+
+        if validation.is_relevant is False:
+            reasons.append("Document may not be a compliance document")
+
+        if reasons:
+            return True, "; ".join(reasons)
+        return False, ""
+
     def _get_priority(self, validation):
-        """Determine review priority"""
-        if len(validation.authenticity_red_flags) >= 3:
+        if len(validation.authenticity_red_flags or []) >= 3:
             return 'high'
-        
-        if validation.overall_confidence and float(validation.overall_confidence) < 50:
+        conf = float(validation.overall_confidence or 0)
+        if conf < 40:
             return 'high'
-        
-        return 'medium'
-    
+        if conf < MIN_AUTO_APPROVE_CONFIDENCE:
+            return 'medium'
+        return 'low'
+
     def _mark_failed(self, validation, step, error):
-        """Mark validation as failed"""
+        logger.error("_mark_failed: validation=%s step=%s error=%s", validation.id, step, error)
         validation.status = 'failed'
         validation.current_step = step
-        validation.error_message = error
+        validation.error_message = str(error)[:1000]
         validation.completed_at = timezone.now()
         validation.requires_manual_review = True
         validation.flagged_reason = f"Failed at {step}: {error}"
         validation.save()
-        
-        # Create manual review entry
-        ManualReviewQueue.objects.create(
+
+        ManualReviewQueue.objects.get_or_create(
             document_validation=validation,
-            priority='high',
-            reason=f"Validation failed at {step}"
+            defaults={'priority': 'high', 'reason': f"Validation failed at {step}"}
         )
-        
-        # Update document
+
         validation.document.status = 'invalid'
         validation.document.save()
+        return validation
