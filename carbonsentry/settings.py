@@ -49,6 +49,8 @@ INSTALLED_APPS = [
     "accounts",
     "vendors",
     "ai_validation",
+    "communication",
+    "audit_logs",
 ]
 
 MIDDLEWARE = [
