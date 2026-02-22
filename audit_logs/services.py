@@ -5,10 +5,6 @@ logger = logging.getLogger(__name__)
 
 
 def log_action(request=None, action='', entity_type='', entity_id='', details=None, actor=None, organization=None):
-    """
-    Reusable audit log helper. Call from any view or service.
-    Never raises — audit logging must not break the caller.
-    """
     try:
         resolved_actor = actor
         resolved_org = organization
@@ -39,9 +35,20 @@ def log_action(request=None, action='', entity_type='', entity_id='', details=No
 
 def _get_ip(request):
     try:
-        forwarded = request.META.get('HTTP_X_FORWARDED_FOR')
+        # X-Forwarded-For is set by proxies/load balancers and contains a chain
+        # of IPs — the first one is the original client
+        forwarded = request.META.get('HTTP_X_FORWARDED_FOR', '')
         if forwarded:
-            return forwarded.split(',')[0].strip()
-        return request.META.get('REMOTE_ADDR')
+            ip = forwarded.split(',')[0].strip()
+            # guard against proxy sending empty segments like ", ,"
+            if ip:
+                return ip
+
+        # direct connection — standard way to get client IP
+        ip = request.META.get('REMOTE_ADDR', '').strip()
+
+        # normalize empty string to None so the DB stores NULL not blank
+        return ip or None
+
     except Exception:
         return None

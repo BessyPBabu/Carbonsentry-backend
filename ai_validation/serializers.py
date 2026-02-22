@@ -73,7 +73,7 @@ class ManualReviewQueueSerializer(serializers.ModelSerializer):
     
     def get_assigned_to_name(self, obj):
         if obj.assigned_to:
-            return f"{obj.assigned_to.first_name} {obj.assigned_to.last_name}".strip() or obj.assigned_to.email
+            return obj.assigned_to.full_name or obj.assigned_to.email
         return None
 
 

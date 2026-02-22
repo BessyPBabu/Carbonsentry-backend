@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     "ai_validation",
     "communication",
     "audit_logs",
+    "reports",
 ]
 
 MIDDLEWARE = [

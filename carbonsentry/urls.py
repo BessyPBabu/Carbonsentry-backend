@@ -27,6 +27,7 @@ urlpatterns = [
     path('api/ai-validation/', include('ai_validation.urls')),
     path('api/communication/', include('communication.urls')),
     path('api/audit_logs/', include('audit_logs.urls')),
+    path('api/reports/', include('reports.urls')),
 
 ]
 
