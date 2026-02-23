@@ -43,6 +43,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "channels",
     "rest_framework",
     "rest_framework_simplejwt",
     "corsheaders",
@@ -95,9 +96,19 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = "carbonsentry.wsgi.application"
+# WSGI_APPLICATION = "carbonsentry.wsgi.application"
+ASGI_APPLICATION = 'carbonsentry.asgi.application'
 
 AUTH_USER_MODEL = 'accounts.User'
+
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        'CONFIG': {
+            'hosts': [os.getenv('REDIS_URL', 'redis://localhost:6379')],
+        },
+    },
+}
 
 
 

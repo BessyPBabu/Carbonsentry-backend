@@ -1,149 +1,226 @@
 import logging
 
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
+from django.db.models import Count, Max, OuterRef, Prefetch, Q, Subquery
+from django.utils import timezone
 from rest_framework import status
+from rest_framework.decorators import action
+from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from rest_framework.viewsets import ModelViewSet
 
-from vendors.models import Vendor
-from .models import VendorMessage
-from .serializers import VendorMessageSerializer, SendMessageSerializer
-from audit_logs.services import log_action
+from .models import ChatToken, Message
+from .serializers import (
+    ChatTokenSerializer,
+    ChatVendorListSerializer,
+    MessageSerializer,
+    SendChatInviteSerializer,
+)
+from .services import send_chat_invitation
 
 logger = logging.getLogger(__name__)
 
 
-class VendorMessageListView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request, vendor_id):
-        try:
-            vendor = self._get_vendor(request, vendor_id)
-        except Vendor.DoesNotExist:
-            return Response({'error': 'Vendor not found'}, status=status.HTTP_404_NOT_FOUND)
-        except Exception:
-            logger.exception("get: failed to fetch vendor %s", vendor_id)
-            return Response({'error': 'Failed to fetch vendor'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-        try:
-            messages = VendorMessage.objects.filter(
-                vendor=vendor,
-                organization=request.user.organization,
-            ).select_related('sender')
-
-            if request.user.role == 'viewer':
-                messages = messages.filter(direction__in=['vendor_facing', 'vendor_reply'])
-
-            return Response(VendorMessageSerializer(messages, many=True).data)
-
-        except Exception:
-            logger.exception("get: failed to fetch messages for vendor %s", vendor_id)
-            return Response({'error': 'Failed to fetch messages'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-    def post(self, request, vendor_id):
-        if request.user.role == 'viewer':
-            return Response({'error': 'Viewers cannot send messages'}, status=status.HTTP_403_FORBIDDEN)
-
-        try:
-            vendor = self._get_vendor(request, vendor_id)
-        except Vendor.DoesNotExist:
-            return Response({'error': 'Vendor not found'}, status=status.HTTP_404_NOT_FOUND)
-        except Exception:
-            logger.exception("post: failed to fetch vendor %s", vendor_id)
-            return Response({'error': 'Failed to fetch vendor'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-        serializer = SendMessageSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-        direction = serializer.validated_data['direction']
-        message_text = serializer.validated_data['message']
-
-        try:
-            msg = VendorMessage.objects.create(
-                vendor=vendor,
-                organization=request.user.organization,
-                sender=request.user,
-                message=message_text,
-                direction=direction,
-            )
-        except Exception:
-            logger.exception("post: failed to save message for vendor %s", vendor_id)
-            return Response({'error': 'Failed to save message'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-        if direction == 'vendor_facing':
-            self._send_email(msg, vendor)
-
-        try:
-            log_action(
-                request=request,
-                action='message_sent',
-                entity_type='Vendor',
-                entity_id=str(vendor.id),
-                details={'direction': direction, 'preview': message_text[:100]},
-            )
-        except Exception:
-            logger.warning("post: audit log failed for message to vendor %s", vendor_id)
-
-        return Response(VendorMessageSerializer(msg).data, status=status.HTTP_201_CREATED)
-
-    def _get_vendor(self, request, vendor_id):
-        return Vendor.objects.get(id=vendor_id, organization=request.user.organization)
-
-    def _send_email(self, msg, vendor):
-        try:
-            from vendors.services.email_service import EmailService
-            EmailService().send_vendor_message(
-                vendor=vendor,
-                message_text=msg.message,
-                sender_name=msg.sender.get_full_name() or msg.sender.email,
-            )
-            msg.email_sent = True
-            msg.save(update_fields=['email_sent'])
-            logger.info("_send_email: delivered to vendor %s", vendor.id)
-        except Exception as e:
-            logger.exception("_send_email: failed for vendor %s", vendor.id)
-            msg.email_error = str(e)[:500]
-            msg.save(update_fields=['email_error'])
-
-
-class VendorChatListView(APIView):
+class ChatVendorListView(APIView):
+    # returns the sidebar list — one entry per vendor that has messages
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         try:
-            if not hasattr(request.user, 'organization'):
-                return Response([])
+            from vendors.models import Vendor
 
-            vendor_ids = VendorMessage.objects.filter(
-                organization=request.user.organization
-            ).values_list('vendor_id', flat=True).distinct()
-
+            # all vendors in this officer's org
             vendors = Vendor.objects.filter(
-                id__in=vendor_ids,
-                organization=request.user.organization,
-            )
+                organization=request.user.organization
+            ).prefetch_related('messages', 'chat_tokens')
 
             result = []
             for vendor in vendors:
-                last_msg = VendorMessage.objects.filter(
-                    vendor=vendor,
-                    organization=request.user.organization,
-                ).order_by('-created_at').first()
+                msgs = list(vendor.messages.order_by('-created_at'))
+                if not msgs:
+                    continue  # skip vendors with no messages
+
+                last = msgs[0]
+                unread = sum(1 for m in msgs if not m.is_read and m.sender_type == 'vendor')
+                has_token = any(t.is_valid for t in vendor.chat_tokens.all())
 
                 result.append({
-                    'id': str(vendor.id),
-                    'name': vendor.name,
-                    'industry': str(vendor.industry) if vendor.industry else '',
-                    'risk_level': vendor.risk_level or 'unknown',
-                    'last_message': last_msg.message[:80] if last_msg else '',
-                    'last_message_at': last_msg.created_at.isoformat() if last_msg else None,
-                    'last_direction': last_msg.direction if last_msg else None,
+                    'vendor_id': str(vendor.id),
+                    'vendor_name': vendor.name,
+                    'last_message': last.content[:80],
+                    'last_message_at': last.created_at,
+                    'unread_count': unread,
+                    'has_active_token': has_token,
                 })
 
-            result.sort(key=lambda x: x['last_message_at'] or '', reverse=True)
-            return Response(result)
+            # sort by most recent message first
+            result.sort(key=lambda x: x['last_message_at'], reverse=True)
 
-        except Exception:
-            logger.exception("VendorChatListView.get: error for user %s", request.user.id)
-            return Response({'error': 'Failed to fetch chat list'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            serializer = ChatVendorListSerializer(result, many=True)
+            return Response(serializer.data)
+
+        except Exception as exc:
+            logger.exception("ChatVendorListView.get error: %s", str(exc))
+            return Response(
+                {'error': 'Failed to load chats'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class VendorMessagesView(APIView):
+    # fetches message history for a specific vendor — used on page load
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, vendor_id):
+        try:
+            from vendors.models import Vendor
+
+            vendor = Vendor.objects.filter(
+                id=vendor_id,
+                organization=request.user.organization
+            ).first()
+
+            if not vendor:
+                return Response({'error': 'Vendor not found'}, status=status.HTTP_404_NOT_FOUND)
+
+            messages = Message.objects.filter(vendor=vendor).select_related('sender')
+
+            # mark vendor messages as read
+            Message.objects.filter(
+                vendor=vendor,
+                sender_type='vendor',
+                is_read=False
+            ).update(is_read=True)
+
+            serializer = MessageSerializer(messages, many=True)
+            return Response(serializer.data)
+
+        except Exception as exc:
+            logger.exception("VendorMessagesView.get error | vendor=%s %s", vendor_id, str(exc))
+            return Response({'error': 'Failed to load messages'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class SendChatInviteView(APIView):
+    # officer sends a chat invitation email to the vendor
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if request.user.role not in ('officer', 'admin'):
+            return Response({'error': 'Only officers and admins can send chat invitations.'}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = SendChatInviteSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        data = serializer.validated_data
+
+        try:
+            from vendors.models import Vendor
+
+            vendor = Vendor.objects.filter(
+                id=data['vendor_id'],
+                organization=request.user.organization
+            ).first()
+
+            if not vendor:
+                return Response({'error': 'Vendor not found'}, status=status.HTTP_404_NOT_FOUND)
+
+            # use provided email or fall back to vendor's contact email
+            target_email = data.get('email') or vendor.contact_email
+            if not target_email:
+                return Response(
+                    {'error': 'No email address available for this vendor.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # create the token
+            chat_token = ChatToken.objects.create(
+                vendor=vendor,
+                created_by=request.user,
+                sent_to_email=target_email,
+            )
+
+            # send the email
+            sent = send_chat_invitation(chat_token)
+            if not sent:
+                logger.error(
+                    "SendChatInviteView: email failed | vendor=%s token=%s",
+                    vendor.id, chat_token.token
+                )
+
+            logger.info(
+                "Chat invite sent | officer=%s vendor=%s to=%s",
+                request.user.id, vendor.id, target_email
+            )
+
+            token_serializer = ChatTokenSerializer(chat_token)
+            return Response(
+                {
+                    'message': f'Chat invitation sent to {target_email}',
+                    'token': token_serializer.data,
+                    'email_sent': sent,
+                },
+                status=status.HTTP_201_CREATED
+            )
+
+        except Exception as exc:
+            logger.exception("SendChatInviteView.post error: %s", str(exc))
+            return Response({'error': 'Failed to send invitation'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class RevokeChatTokenView(APIView):
+    # officer can invalidate a token if they think the link was compromised
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, token_id):
+        try:
+            token = ChatToken.objects.get(
+                id=token_id,
+                vendor__organization=request.user.organization
+            )
+            token.is_revoked = True
+            token.save(update_fields=['is_revoked'])
+
+            logger.info(
+                "Chat token revoked | token=%s by=%s", token_id, request.user.id
+            )
+            return Response({'message': 'Token revoked successfully'})
+
+        except ChatToken.DoesNotExist:
+            return Response({'error': 'Token not found'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as exc:
+            logger.exception("RevokeChatTokenView.post error: %s", str(exc))
+            return Response({'error': 'Failed to revoke token'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class VendorChatTokenValidateView(APIView):
+    # public endpoint — vendor's browser calls this to validate the token before opening WS
+    permission_classes = [AllowAny]
+
+    def get(self, request, token):
+        try:
+            chat_token = ChatToken.objects.select_related('vendor').get(token=token)
+
+            if not chat_token.is_valid:
+                reason = 'revoked' if chat_token.is_revoked else 'expired'
+                logger.info("VendorChatTokenValidateView: token %s | token=%s", reason, token)
+                return Response(
+                    {'valid': False, 'reason': reason},
+                    status=status.HTTP_200_OK
+                )
+
+            return Response({
+                'valid': True,
+                'vendor_id': str(chat_token.vendor.id),
+                'vendor_name': chat_token.vendor.name,
+                'expires_at': chat_token.expires_at.isoformat(),
+            })
+
+        except ChatToken.DoesNotExist:
+            return Response(
+                {'valid': False, 'reason': 'not_found'},
+                status=status.HTTP_200_OK
+            )
+        except Exception as exc:
+            logger.exception("VendorChatTokenValidateView error: %s", str(exc))
+            return Response({'valid': False, 'reason': 'error'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
