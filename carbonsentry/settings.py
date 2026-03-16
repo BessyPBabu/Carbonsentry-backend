@@ -34,6 +34,7 @@ ALLOWED_HOSTS = os.getenv("DJANGO_ALLOWED_HOSTS", "").split(",")
 
 
 INSTALLED_APPS = [
+    "django_prometheus",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -53,6 +54,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    "django_prometheus.middleware.PrometheusBeforeMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -61,6 +63,7 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "django_prometheus.middleware.PrometheusAfterMiddleware",
 ]
 
 ROOT_URLCONF = "carbonsentry.urls"
@@ -93,7 +96,7 @@ TEMPLATES = [
     },
 ]
 
-# WSGI_APPLICATION = "carbonsentry.wsgi.application"
+
 ASGI_APPLICATION = 'carbonsentry.asgi.application'
 
 AUTH_USER_MODEL = 'accounts.User'
@@ -229,3 +232,13 @@ CELERY_TIMEZONE = 'UTC'
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 
 GEMINI_API_KEY =os.getenv('GEMINI_API_KEY')
+
+PROMETHEUS_URL = os.getenv(
+    "PROMETHEUS_URL",
+    "http://localhost:9090"
+)
+
+GRAFANA_URL = os.getenv(
+    "GRAFANA_URL",
+    "http://localhost:3000"
+)

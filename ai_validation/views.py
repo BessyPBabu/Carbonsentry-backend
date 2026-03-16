@@ -1,8 +1,9 @@
 import logging
-
+import requests as http_requests
+from django.conf import settings
 from django.utils import timezone
+from rest_framework.views import APIView
 from django.db.models import Avg
-
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -271,3 +272,91 @@ class ManualReviewQueueViewSet(viewsets.ModelViewSet):
         except Exception:
             logger.exception("resolve: error for review %s", pk)
             return Response({'error': 'Failed to resolve review'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+
+import requests as http_requests
+
+class AIMonitoringView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not hasattr(request.user, 'organization'):
+            return Response(
+                {'error': 'No organization found'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        prometheus_url = getattr(settings, 'PROMETHEUS_URL', '').strip()
+        grafana_url = getattr(settings, 'GRAFANA_URL', '').strip()
+
+        if prometheus_url:
+            metrics = self._from_prometheus(prometheus_url)
+            source = 'prometheus'
+        else:
+            # graceful degradation: pull stats from the DB directly
+            metrics = self._from_db(request.user.organization)
+            source = 'database'
+
+        return Response({
+            'source': source,
+            'grafana_url': grafana_url or None,
+            'metrics': metrics,
+        })
+
+    def _from_prometheus(self, base_url):
+        # each key maps to a PromQL expression
+        queries = {
+            'validations_valid':   'carbonsentry_validations_total{status="valid"}',
+            'validations_invalid': 'carbonsentry_validations_total{status="invalid"}',
+            'validations_review':  'carbonsentry_validations_total{status="manual_review"}',
+            'validations_failed':  'carbonsentry_validations_total{status="failed"}',
+            'p95_duration_s':      'histogram_quantile(0.95, rate(carbonsentry_validation_duration_seconds_bucket[1h]))',
+            'gemini_success':      'sum(carbonsentry_gemini_calls_total{success="True"})',
+            'gemini_failed':       'sum(carbonsentry_gemini_calls_total{success="False"})',
+            'median_confidence':   'histogram_quantile(0.50, rate(carbonsentry_confidence_score_bucket[1h]))',
+        }
+
+        result = {}
+        for key, query in queries.items():
+            try:
+                res = http_requests.get(
+                    f'{base_url}/api/v1/query',
+                    params={'query': query},
+                    timeout=3,
+                )
+                if res.ok:
+                    data = res.json().get('data', {}).get('result', [])
+                    result[key] = round(float(data[0]['value'][1]), 2) if data else 0
+                else:
+                    result[key] = 0
+            except Exception as exc:
+                logger.warning(
+                    'AIMonitoringView._from_prometheus: %s failed — %s', key, exc
+                )
+                result[key] = 0
+
+        return result
+
+    def _from_db(self, organization):
+        from django.db.models import Avg
+
+        qs = DocumentValidation.objects.filter(
+            document__vendor__organization=organization
+        )
+
+        completed = qs.filter(status='completed')
+        avg_conf = (
+            qs.filter(overall_confidence__isnull=False)
+            .aggregate(avg=Avg('overall_confidence'))['avg'] or 0
+        )
+
+        return {
+            'validations_valid':   completed.filter(requires_manual_review=False).count(),
+            'validations_invalid': qs.filter(status='failed').count(),
+            'validations_review':  qs.filter(requires_manual_review=True).count(),
+            'validations_failed':  qs.filter(status='failed').count(),
+            'p95_duration_s':      None,
+            'gemini_success':      None,
+            'gemini_failed':       None,
+            'median_confidence':   round(float(avg_conf), 1),
+        }

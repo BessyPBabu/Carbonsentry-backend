@@ -25,11 +25,11 @@ class ReportViewSet(viewsets.ModelViewSet):
             organization=user.organization
         ).select_related('generated_by', 'approved_by', 'vendor')
 
-        # viewers only see approved reports
+    
         if user.role == 'viewer':
             qs = qs.filter(status='approved')
 
-        # optional query filters
+        
         report_type = self.request.query_params.get('report_type')
         status_filter = self.request.query_params.get('status')
         vendor_id = self.request.query_params.get('vendor')
@@ -46,7 +46,7 @@ class ReportViewSet(viewsets.ModelViewSet):
     def destroy(self, request, *args, **kwargs):
         report = self.get_object()
 
-        # approved reports cannot be deleted — they're part of the compliance record
+        
         if report.status == 'approved':
             logger.warning(
                 "User=%s attempted to delete approved report=%s",
@@ -60,9 +60,6 @@ class ReportViewSet(viewsets.ModelViewSet):
         logger.info("Report deleted | report=%s user=%s", report.id, request.user.id)
         return super().destroy(request, *args, **kwargs)
 
-    # ------------------------------------------------------------------
-    # POST /reports/generate/
-    # ------------------------------------------------------------------
 
     @action(detail=False, methods=['post'], url_path='generate')
     def generate(self, request):
@@ -101,7 +98,7 @@ class ReportViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_404_NOT_FOUND
                 )
 
-        # create the report record first (status=draft) so we have an ID
+        
         report = Report.objects.create(
             organization=request.user.organization,
             report_type=report_type,
@@ -134,7 +131,7 @@ class ReportViewSet(viewsets.ModelViewSet):
             logger.info("Report generated successfully | report=%s", report.id)
 
         except Exception as exc:
-            # mark it failed so users know something went wrong
+            
             report.status = 'draft'
             report.save(update_fields=['status'])
             logger.exception(
@@ -148,9 +145,6 @@ class ReportViewSet(viewsets.ModelViewSet):
         out_serializer = ReportSerializer(report)
         return Response(out_serializer.data, status=status.HTTP_201_CREATED)
 
-    # ------------------------------------------------------------------
-    # PATCH /reports/{id}/approve/
-    # ------------------------------------------------------------------
 
     @action(detail=True, methods=['patch'], url_path='approve')
     def approve(self, request, pk=None):
@@ -191,15 +185,13 @@ class ReportViewSet(viewsets.ModelViewSet):
         out_serializer = ReportSerializer(report)
         return Response(out_serializer.data)
 
-    # ------------------------------------------------------------------
-    # GET /reports/{id}/download_pdf/
-    # ------------------------------------------------------------------
+
 
     @action(detail=True, methods=['get'], url_path='download_pdf')
     def download_pdf(self, request, pk=None):
         report = self.get_object()
 
-        # viewers can only download approved reports
+        
         if request.user.role == 'viewer' and report.status != 'approved':
             return Response(
                 {'error': 'Viewers can only download approved reports.'},
@@ -218,7 +210,7 @@ class ReportViewSet(viewsets.ModelViewSet):
             exporter = PDFExporter()
             pdf_bytes = exporter.export(report)
         except RuntimeError as exc:
-            # likely missing reportlab
+            
             logger.error("PDF export failed | report=%s error=%s", report.id, str(exc))
             return Response(
                 {'error': str(exc)},

@@ -3,7 +3,8 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     DocumentValidationViewSet,
     VendorRiskProfileViewSet,
-    ManualReviewQueueViewSet
+    ManualReviewQueueViewSet,
+    AIMonitoringView
 )
 
 router = DefaultRouter()
@@ -13,4 +14,5 @@ router.register(r'manual-reviews', ManualReviewQueueViewSet, basename='manual-re
 
 urlpatterns = [
     path('', include(router.urls)),
+    path('monitoring/', AIMonitoringView.as_view(), name='ai-monitoring'),
 ]

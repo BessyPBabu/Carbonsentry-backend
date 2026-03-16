@@ -187,6 +187,7 @@ class Document(models.Model):
         default="pending",
         db_index=True,
     )
+    upload_attempts = models.IntegerField(default=0)
     expiry_date = models.DateField(null=True, blank=True)
     uploaded_at = models.DateTimeField(null=True, blank=True)
 

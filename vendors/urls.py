@@ -15,11 +15,13 @@ from vendors.views.vendor_views import (
 from vendors.views.document_views import (
     DocumentListView,
     DocumentDetailView,
+    DocumentResendLinkView
 )
 
 from vendors.views.media_views import (  
     DocumentFileView,
     DocumentDownloadView,
+    
 )
 
 urlpatterns = [
@@ -32,6 +34,7 @@ urlpatterns = [
     path("", VendorListCreateView.as_view(), name="vendor-list-create"),
     path("<uuid:vendor_id>/", VendorDetailView.as_view(), name="vendor-detail"),
     path("<uuid:vendor_id>/documents/", VendorDocumentListView.as_view(), name="vendor-documents"),
+    path('documents/<uuid:document_id>/resend-link/', DocumentResendLinkView.as_view(), name='document-resend-link'),
 
     # Public upload (no auth required)
     path("upload/<str:token>/", VendorPublicUploadView.as_view(), name="vendor-public-upload"),

@@ -6,5 +6,4 @@ class CommunicationConfig(AppConfig):
     name = 'communication'
 
     def ready(self):
-        # connect signal handlers
-        import communication.signals  # noqa: F401
+        import communication.signals  

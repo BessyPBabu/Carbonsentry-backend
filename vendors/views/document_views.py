@@ -3,10 +3,13 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
-from django.db.models import Q, Prefetch
+from django.db.models import Q
 from django.core.paginator import Paginator, EmptyPage
-
+from rest_framework.views import APIView
+from audit_logs.models import AuditLog
 from vendors.models import Document
+from vendors.services.upload_token_services import UploadTokenService
+from vendors.services.email_service import EmailService
 from vendors.serializers.document_serializers import (
     DocumentListSerializer,
     DocumentDetailSerializer
@@ -182,3 +185,62 @@ class DocumentDetailView(APIView):
                 {"error": "Failed to fetch document details"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+        
+
+class DocumentResendLinkView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, document_id):
+        try:
+            doc = Document.objects.select_related('vendor').get(
+                id=document_id,
+                vendor__organization=request.user.organization
+            )
+        except Document.DoesNotExist:
+            return Response(
+                {'error': 'Document not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # only allow resend for invalid or expired documents
+        if doc.status not in ('invalid', 'expired'):
+            return Response(
+                {'error': f'Cannot resend link for document with status: {doc.status}'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        vendor = doc.vendor
+
+        # reset document so it appears in vendor upload form again
+        doc.status = 'pending'
+        doc.file   = None
+        doc.save(update_fields=['status', 'file'])
+
+        # regenerate the 72hr upload token on the vendor
+        UploadTokenService.generate_for_vendor(vendor)
+
+        # send fresh upload link email
+        EmailService.send_upload_link(
+            vendor=vendor,
+            email=vendor.contact_email
+        )
+
+        # audit trail
+        AuditLog.objects.create(
+            actor=request.user,
+            action='document_reupload_requested',
+            entity_type='document',
+            entity_id=str(doc.id),
+            details={
+                'document_type': doc.document_type,
+                'vendor_id': str(vendor.id),
+                'vendor_name': vendor.name,
+                'sent_to': vendor.contact_email,
+            }
+        )
+
+        return Response({
+            'message': f'Upload link resent to {vendor.contact_email}',
+            'vendor_id': str(vendor.id),
+            'document_id': str(doc.id),
+        })

@@ -35,19 +35,15 @@ def log_action(request=None, action='', entity_type='', entity_id='', details=No
 
 def _get_ip(request):
     try:
-        # X-Forwarded-For is set by proxies/load balancers and contains a chain
-        # of IPs — the first one is the original client
+      
         forwarded = request.META.get('HTTP_X_FORWARDED_FOR', '')
         if forwarded:
             ip = forwarded.split(',')[0].strip()
-            # guard against proxy sending empty segments like ", ,"
             if ip:
                 return ip
 
-        # direct connection — standard way to get client IP
         ip = request.META.get('REMOTE_ADDR', '').strip()
 
-        # normalize empty string to None so the DB stores NULL not blank
         return ip or None
 
     except Exception:

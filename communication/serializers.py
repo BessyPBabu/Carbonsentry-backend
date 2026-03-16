@@ -56,15 +56,18 @@ class ChatTokenSerializer(serializers.ModelSerializer):
 
 class SendChatInviteSerializer(serializers.Serializer):
     vendor_id = serializers.UUIDField()
-    # if blank, falls back to vendor's contact_email
     email = serializers.EmailField(required=False, allow_blank=True)
 
 
 class ChatVendorListSerializer(serializers.Serializer):
-    # summary item shown in the officer's chat sidebar
     vendor_id = serializers.UUIDField()
     vendor_name = serializers.CharField()
     last_message = serializers.CharField(allow_null=True)
     last_message_at = serializers.DateTimeField(allow_null=True)
     unread_count = serializers.IntegerField()
     has_active_token = serializers.BooleanField()
+
+
+class VerifyOtpSerializer(serializers.Serializer):
+    token = serializers.UUIDField()
+    otp_code = serializers.CharField(min_length=6, max_length=6)

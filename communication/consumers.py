@@ -17,7 +17,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
         self.vendor_sender_name = None
         self.sender_type = None
 
-        # figure out who is connecting — officer (JWT) or vendor (chat token)
         query_string = self.scope.get('query_string', b'').decode()
         params = dict(p.split('=') for p in query_string.split('&') if '=' in p)
 
@@ -25,14 +24,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
         chat_token = params.get('chat_token')
 
         if jwt_token:
-            # officer connecting — validate JWT
+            
             user = await self._get_user_from_jwt(jwt_token)
             if not user:
                 logger.warning("ChatConsumer: invalid JWT on connect | vendor=%s", self.vendor_id)
                 await self.close(code=4001)
                 return
 
-            # officer must belong to the same org as the vendor
             vendor_ok = await self._vendor_belongs_to_org(self.vendor_id, user)
             if not vendor_ok:
                 logger.warning(
@@ -47,7 +45,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             logger.info("ChatConsumer: officer connected | user=%s vendor=%s", user.id, self.vendor_id)
 
         elif chat_token:
-            # vendor connecting — validate chat token
+            
             token_obj = await self._get_valid_chat_token(chat_token, self.vendor_id)
             if not token_obj:
                 logger.warning(
@@ -66,11 +64,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self.close(code=4000)
             return
 
-        # join the vendor's channel group
+        
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
 
-        # send connection confirmation to the connecting client
+        
         await self.send(text_data=json.dumps({
             'type': 'connection_established',
             'sender_type': self.sender_type,
@@ -98,12 +96,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if not content:
             return
 
-        # internal notes can only be sent by officers
+        
         if message_type == 'internal_note' and self.sender_type != 'officer':
             logger.warning("ChatConsumer: vendor tried to send internal note — blocked")
             return
 
-        # save message to DB
         message = await self._save_message(
             vendor_id=self.vendor_id,
             content=content,
@@ -128,18 +125,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'vendor_id': self.vendor_id,
         }
 
-        # internal notes only broadcast to officers — don't send to the vendor group
-        # (vendor is in the same group so we filter on receive)
+    
         if message_type == 'internal_note':
-            # send only to this connection — officer can see it immediately
-            # other officers in the group also receive via group_send with an internal flag
             payload['internal'] = True
 
         await self.channel_layer.group_send(self.group_name, payload)
 
-    # this method is called by channel layer when a group message arrives
+   
     async def chat_message(self, event):
-        # if this is an internal note, only deliver it to officers
+       
         if event.get('internal') and self.sender_type == 'vendor':
             return
 
@@ -153,9 +147,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'created_at': event['created_at'],
         }))
 
-    # ---------------------------------------------------------------
-    # Database helpers — all sync DB calls must go through database_sync_to_async
-    # ---------------------------------------------------------------
 
     @database_sync_to_async
     def _get_user_from_jwt(self, token_string):
@@ -192,7 +183,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
             )
             if not token.is_valid:
                 return None
+            
+            if not token.otp_verified:
+                logger.warning(
+                    "_get_valid_chat_token: OTP not verified yet | vendor=%s", vendor_id
+                )
+                return None
+            
             return token
+        
         except ChatToken.DoesNotExist:
             return None
         except Exception as exc:

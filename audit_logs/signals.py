@@ -7,7 +7,7 @@ from .services import log_action
 logger = logging.getLogger(__name__)
 
 
-# deferred imports — models not ready at import time
+
 def _safe_connect():
     try:
         from vendors.models import Vendor, Document

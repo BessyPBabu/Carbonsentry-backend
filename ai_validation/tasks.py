@@ -1,11 +1,39 @@
 from celery import shared_task
 from django.apps import apps
+import time
 from django.utils import timezone
 from django.db import transaction, IntegrityError
+from prometheus_client import Counter, Histogram
+
 import logging
 
 logger = logging.getLogger(__name__)
 
+
+# counters increment once per event
+validation_counter = Counter(
+    'carbonsentry_validations_total',
+    'Total document validations run',
+    ['status']  # label: valid / invalid / manual_review / failed
+)
+
+validation_duration = Histogram(
+    'carbonsentry_validation_duration_seconds',
+    'Time taken for full validation pipeline',
+    buckets=[1, 2, 5, 10, 20, 30, 60]
+)
+
+gemini_call_counter = Counter(
+    'carbonsentry_gemini_calls_total',
+    'Gemini API calls per pipeline step',
+    ['step', 'success']  # step: readability/relevance/authenticity/extraction
+)
+
+confidence_histogram = Histogram(
+    'carbonsentry_confidence_score',
+    'Distribution of AI confidence scores',
+    buckets=[10, 20, 30, 40, 50, 55, 60, 70, 80, 90, 100]
+)
 
 @shared_task(bind=True, max_retries=3)
 def validate_document_async(self, document_id):
@@ -50,19 +78,37 @@ def validate_document_async(self, document_id):
 
         from .services.orchestrator import ValidationOrchestrator
 
+        start = time.time()
+
         orchestrator = ValidationOrchestrator()
         validation = orchestrator.validate_document(document, validation)
-        
+
+        # record duration regardless of outcome
+        validation_duration.observe(time.time() - start)
+
         if validation.status == "failed":
             logger.error(
                 f"Validation {validation.id} failed at '{validation.current_step}': "
                 f"{validation.error_message}"
             )
+            validation_counter.labels(status='failed').inc()
         else:
             logger.info(f"Validation {validation.id} completed successfully")
             validation.status = "completed"
             validation.completed_at = timezone.now()
             validation.save(update_fields=["status", "completed_at"])
+
+            # pick the right label for the counter
+            if validation.requires_manual_review:
+                validation_counter.labels(status='manual_review').inc()
+            elif validation.overall_result == 'valid':
+                validation_counter.labels(status='valid').inc()
+            else:
+                validation_counter.labels(status='invalid').inc()
+
+            # record confidence score if available
+            if validation.overall_confidence:
+                confidence_histogram.observe(float(validation.overall_confidence))
 
         return {
             "success": validation.status != "failed",
@@ -89,6 +135,7 @@ def validate_document_async(self, document_id):
         }
 
     except Exception as e:
+        validation_counter.labels(status='failed').inc()
         logger.exception(f"Failed to validate document {document_id}")
         
         try:

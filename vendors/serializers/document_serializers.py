@@ -11,7 +11,6 @@ class DocumentListSerializer(serializers.ModelSerializer):
     vendor_id = serializers.UUIDField(source='vendor.id', read_only=True)
     vendor_industry = serializers.CharField(source='vendor.industry.name', read_only=True)
     validation = serializers.SerializerMethodField()
-
     file_url = serializers.SerializerMethodField()
     download_url = serializers.SerializerMethodField()
 
@@ -30,6 +29,7 @@ class DocumentListSerializer(serializers.ModelSerializer):
             'status',
             'expiry_date',
             'uploaded_at',
+            'upload_attempts',
             'validation'
         ]
 
@@ -95,6 +95,7 @@ class DocumentDetailSerializer(serializers.ModelSerializer):
             "file_url",      
             "download_url",
             "uploaded_at",
+            'upload_attempts',
             "expiry_date",
         ]
 

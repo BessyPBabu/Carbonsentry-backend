@@ -49,3 +49,5 @@ tzdata==2025.3
 urllib3==2.6.3
 vine==5.1.0
 wcwidth==0.6.0
+django-prometheus==2.4.1
+prometheus-client==0.24.1

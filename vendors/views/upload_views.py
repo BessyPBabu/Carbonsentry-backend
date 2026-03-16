@@ -135,6 +135,9 @@ class VendorPublicUploadView(APIView):
             serializer.is_valid(raise_exception=True)
             serializer.save()
 
+            document.upload_attempts = (document.upload_attempts or 0) + 1
+            document.save(update_fields=["upload_attempts"])
+
             validate_document_async.delay(str(document.id))
             
             logger.info(

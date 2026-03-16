@@ -7,29 +7,32 @@ logger = logging.getLogger(__name__)
 
 
 def send_chat_invitation(chat_token):
-    # build the public vendor chat URL using the token UUID
     frontend_base = getattr(settings, 'FRONTEND_URL', 'http://localhost:5173')
     chat_url = f"{frontend_base}/vendor-chat/{chat_token.token}"
 
     subject = f"Secure Chat Invitation — {chat_token.vendor.name}"
 
-    body = f"""
-Hello,
+    # OTP is prominently displayed so vendors can find it easily
+    body = f"""Hello,
 
 You have been invited to a secure chat session regarding compliance documentation for {chat_token.vendor.name}.
 
-Click the link below to join the chat:
-
+STEP 1 — Click your chat link:
 {chat_url}
 
-This link is valid for 72 hours and can only be used once at a time.
-After that, please contact your compliance officer for a new link.
+STEP 2 — Enter this verification code when prompted:
 
-This is a secure, encrypted communication channel. Do not share this link with anyone.
+    ┌──────────────────┐
+    │   Code: {chat_token.otp_code}     │
+    └──────────────────┘
+
+This code is valid for the lifetime of the chat link (72 hours).
+
+Do not share this link or code with anyone. This is a private, encrypted channel.
 
 Regards,
 CarbonSentry Compliance Team
-    """.strip()
+""".strip()
 
     try:
         send_mail(
@@ -40,13 +43,13 @@ CarbonSentry Compliance Team
             fail_silently=False,
         )
         logger.info(
-            "Chat invitation email sent | vendor=%s to=%s token=%s",
-            chat_token.vendor.id, chat_token.sent_to_email, chat_token.token
+            "Chat invitation sent | vendor=%s to=%s token=%s",
+            chat_token.vendor.id, chat_token.sent_to_email, chat_token.token,
         )
         return True
     except Exception as exc:
         logger.exception(
-            "Failed to send chat invitation | vendor=%s to=%s error=%s",
-            chat_token.vendor.id, chat_token.sent_to_email, str(exc)
+            "Chat invitation failed | vendor=%s to=%s: %s",
+            chat_token.vendor.id, chat_token.sent_to_email, exc,
         )
         return False
