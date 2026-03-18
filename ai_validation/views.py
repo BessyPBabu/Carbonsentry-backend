@@ -254,13 +254,11 @@ class ManualReviewQueueViewSet(viewsets.ModelViewSet):
             review.resolved_at = timezone.now()
             review.save()
 
-            # update document status based on human decision
             doc = review.document_validation.document
             if decision == 'approved':
                 doc.status = 'valid'
             elif decision == 'rejected':
                 doc.status = 'invalid'
-            # needs_changes keeps it as 'flagged'
             doc.save(update_fields=['status'])
 
             logger.info(
@@ -293,7 +291,6 @@ class AIMonitoringView(APIView):
             metrics = self._from_prometheus(prometheus_url)
             source = 'prometheus'
         else:
-            # graceful degradation: pull stats from the DB directly
             metrics = self._from_db(request.user.organization)
             source = 'database'
 
@@ -304,7 +301,6 @@ class AIMonitoringView(APIView):
         })
 
     def _from_prometheus(self, base_url):
-        # each key maps to a PromQL expression
         queries = {
             'validations_valid':   'carbonsentry_validations_total{status="valid"}',
             'validations_invalid': 'carbonsentry_validations_total{status="invalid"}',

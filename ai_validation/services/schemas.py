@@ -3,11 +3,6 @@ from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 
 
-# each schema is the exact shape we expect from the LLM for that pipeline step
-# using Pydantic v2 — with_structured_output() validates the response automatically
-# so a malformed LLM reply raises a validation error instead of silently defaulting
-
-
 class ReadabilityOutput(BaseModel):
     is_readable: bool = Field(
         description="False only if document is completely blank, fully corrupted, or pure noise"
@@ -58,7 +53,6 @@ class AuthenticityOutput(BaseModel):
     @field_validator("score")
     @classmethod
     def clamp_floor(cls, v):
-        # digital documents are not penalised for being digital
         return max(50.0, min(100.0, v))
 
 

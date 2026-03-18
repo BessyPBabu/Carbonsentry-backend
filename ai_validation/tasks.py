@@ -10,11 +10,10 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-# counters increment once per event
 validation_counter = Counter(
     'carbonsentry_validations_total',
     'Total document validations run',
-    ['status']  # label: valid / invalid / manual_review / failed
+    ['status'] 
 )
 
 validation_duration = Histogram(
@@ -26,7 +25,7 @@ validation_duration = Histogram(
 gemini_call_counter = Counter(
     'carbonsentry_gemini_calls_total',
     'Gemini API calls per pipeline step',
-    ['step', 'success']  # step: readability/relevance/authenticity/extraction
+    ['step', 'success']  
 )
 
 confidence_histogram = Histogram(
@@ -83,7 +82,6 @@ def validate_document_async(self, document_id):
         orchestrator = ValidationOrchestrator()
         validation = orchestrator.validate_document(document, validation)
 
-        # record duration regardless of outcome
         validation_duration.observe(time.time() - start)
 
         if validation.status == "failed":
@@ -98,15 +96,11 @@ def validate_document_async(self, document_id):
             validation.completed_at = timezone.now()
             validation.save(update_fields=["status", "completed_at"])
 
-            # pick the right label for the counter
             if validation.requires_manual_review:
                 validation_counter.labels(status='manual_review').inc()
-            elif validation.overall_result == 'valid':
-                validation_counter.labels(status='valid').inc()
             else:
-                validation_counter.labels(status='invalid').inc()
+                validation_counter.labels(status='valid').inc()
 
-            # record confidence score if available
             if validation.overall_confidence:
                 confidence_histogram.observe(float(validation.overall_confidence))
 

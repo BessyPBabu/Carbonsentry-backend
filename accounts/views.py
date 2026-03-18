@@ -80,9 +80,9 @@ class VerifyOrganizationEmailView(APIView):
                         "organization_name": organization.name,
                         "login_url": f"{settings.FRONTEND_URL}/login",
                         "next_step": "Your organization is already verified. You can log in now.",
-                        "already_verified": True,  # Flag for frontend
+                        "already_verified": True,  
                     },
-                    status=status.HTTP_200_OK,  # Return 200, not error!
+                    status=status.HTTP_200_OK,  
                 )
 
             if not is_verification_token_valid(organization, token):
@@ -157,6 +157,11 @@ class OrganizationMeView(APIView):
         )
 
         return Response(serializer.data)
+
+    def get_permissions(self):
+        if self.request.method == "GET":
+            return [IsAuthenticated()]
+        return [IsAuthenticated(), IsAdmin()]
 
 
 class UserMeView(APIView):

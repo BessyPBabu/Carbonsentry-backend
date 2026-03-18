@@ -104,7 +104,7 @@ class RiskCalculator:
 
     def _risk_level(self, emissions, threshold, total_docs, validated_docs):
         if validated_docs == 0:
-            return 'medium'  # unknown until something is validated
+            return 'medium'  
 
         if emissions == 0:
             coverage = validated_docs / total_docs if total_docs > 0 else 0
@@ -119,10 +119,8 @@ class RiskCalculator:
         return 'critical'
 
     def _risk_score(self, emissions, threshold, flagged, total, expiry_date):
-        # score is 0-100; frontend displays as score/20 → X.X / 5
         score = 0.0
 
-        # emissions component (0-50)
         if emissions > 0:
             if emissions > threshold.critical_threshold:
                 score += 50
@@ -135,13 +133,11 @@ class RiskCalculator:
             else:
                 score += 5
         else:
-            score += 20  # no data — moderate penalty
-
-        # flagged documents component (0-25)
+            score += 20  
+        
         if total > 0:
             score += (flagged / total) * 25
 
-        # expiry component (0-25)
         if expiry_date:
             today = date.today()
             if expiry_date < today:

@@ -27,24 +27,19 @@ from vendors.views.media_views import (
 urlpatterns = [
     path("bulk-upload/", VendorBulkUploadView.as_view(), name="vendor-bulk-upload"),
     
-    # Send emails (must be before <uuid:vendor_id>/ to avoid conflicts)
     path("send-emails/", VendorSendEmailsView.as_view(), name="vendor-send-emails"),
     
-    # Vendor CRUD
     path("", VendorListCreateView.as_view(), name="vendor-list-create"),
     path("<uuid:vendor_id>/", VendorDetailView.as_view(), name="vendor-detail"),
     path("<uuid:vendor_id>/documents/", VendorDocumentListView.as_view(), name="vendor-documents"),
     path('documents/<uuid:document_id>/resend-link/', DocumentResendLinkView.as_view(), name='document-resend-link'),
 
-    # Public upload (no auth required)
     path("upload/<str:token>/", VendorPublicUploadView.as_view(), name="vendor-public-upload"),
 
-    # Configuration
     path("config/industries/", IndustryListCreateView.as_view(), name="industry-list-create"),
     path("config/document-types/", DocumentTypeListCreateView.as_view(), name="document-type-list-create"),
     path("config/industry-documents/", IndustryRequiredDocumentListCreateView.as_view(), name="industry-documents"),
     
-    # Documents
     path("documents/", DocumentListView.as_view(), name="documents-list"),
     path("documents/<uuid:document_id>/", DocumentDetailView.as_view(), name="document-detail"),
 

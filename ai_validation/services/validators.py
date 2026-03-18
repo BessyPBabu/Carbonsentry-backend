@@ -14,13 +14,11 @@ class ResponseParser:
             logger.warning("parse_json: received empty text")
             return False, None, "Empty response"
 
-        # direct parse
         try:
             return True, json.loads(text.strip()), None
         except json.JSONDecodeError:
             pass
 
-        # strip markdown fences
         try:
             cleaned = re.sub(r'```(?:json)?\s*', '', text)
             cleaned = re.sub(r'```', '', cleaned).strip()
@@ -28,7 +26,6 @@ class ResponseParser:
         except json.JSONDecodeError:
             pass
 
-        # find first {...} block
         try:
             match = re.search(r'\{[\s\S]*\}', text)
             if match:
@@ -36,7 +33,6 @@ class ResponseParser:
         except json.JSONDecodeError:
             pass
 
-        # slice between first { and last }
         try:
             start = text.find('{')
             end = text.rfind('}')
@@ -78,7 +74,6 @@ class DataValidator:
             logger.warning("validate_date: '%s' is after 2050", date_str)
             return False, f"Date {date_str} unrealistically far in the future"
 
-        # expiry dates are in the future — that is expected and valid
         if not is_expiry:
             if parsed > date.today() + timedelta(days=30):
                 logger.warning("validate_date: issue date '%s' is in the future", date_str)

@@ -3,10 +3,12 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
+from django.conf import settings
 from django.db.models import Q
 from django.core.paginator import Paginator, EmptyPage
 from rest_framework.views import APIView
 from audit_logs.models import AuditLog
+from accounts.permissions import IsAdminOrOfficer
 from vendors.models import Document
 from vendors.services.upload_token_services import UploadTokenService
 from vendors.services.email_service import EmailService
@@ -40,7 +42,6 @@ class DocumentListView(APIView):
                 'vendor__industry'
             ).prefetch_related('validation','validation__metadata')
 
-            # Apply filters
             status_filter = request.query_params.get('status', '').strip()
             if status_filter:
                 documents = documents.filter(status=status_filter)
@@ -62,10 +63,8 @@ class DocumentListView(APIView):
                 )
                 logger.debug(f"Applied search filter: {search}")
 
-            # Order by most recent
             documents = documents.order_by('-uploaded_at', '-id')
 
-            # Pagination
             page_number = request.query_params.get('page', 1)
             page_size = 50
             
@@ -85,7 +84,7 @@ class DocumentListView(APIView):
                 logger.warning(f"Page {page_number} is empty")
                 page_obj = paginator.get_page(paginator.num_pages)
 
-            # Serialize
+
             serializer = DocumentListSerializer(
             page_obj.object_list, 
             many=True,
@@ -188,7 +187,7 @@ class DocumentDetailView(APIView):
         
 
 class DocumentResendLinkView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsAdminOrOfficer]
 
     def post(self, request, document_id):
         try:
@@ -219,20 +218,24 @@ class DocumentResendLinkView(APIView):
         # regenerate the 72hr upload token on the vendor
         UploadTokenService.generate_for_vendor(vendor)
 
-        # send fresh upload link email
-        EmailService.send_upload_link(
-            vendor=vendor,
-            email=vendor.contact_email
+        
+
+        token = UploadTokenService.generate_for_vendor(vendor)
+        upload_link = f"{settings.FRONTEND_URL}/upload/{token}"
+
+        EmailService.send(
+            subject="CarbonSentry - New Upload Link",
+            body=f"Please upload your documents here: {upload_link}",
+            recipient=vendor.contact_email,
         )
 
-        # audit trail
         AuditLog.objects.create(
             actor=request.user,
             action='document_reupload_requested',
             entity_type='document',
             entity_id=str(doc.id),
             details={
-                'document_type': doc.document_type,
+                'document_type': doc.document_type.name,
                 'vendor_id': str(vendor.id),
                 'vendor_name': vendor.name,
                 'sent_to': vendor.contact_email,

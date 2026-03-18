@@ -13,7 +13,6 @@ CHAT_TOKEN_EXPIRY_HOURS = 72
 
 
 def _make_otp():
-    # cryptographically random 6-digit code, zero-padded
     return str(secrets.randbelow(1_000_000)).zfill(6)
 
 
@@ -44,8 +43,7 @@ class ChatToken(models.Model):
     def save(self, *args, **kwargs):
         if not self.expires_at:
             self.expires_at = timezone.now() + timedelta(hours=CHAT_TOKEN_EXPIRY_HOURS)
-        # generate OTP exactly once at creation
-        if not self.pk and not self.otp_code:
+        if self._state.adding and not self.otp_code:
             self.otp_code = _make_otp()
         super().save(*args, **kwargs)
 

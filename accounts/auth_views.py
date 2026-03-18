@@ -26,6 +26,8 @@ from .serializers import (
 
 logger = logging.getLogger("accounts.auth")
 
+from rest_framework.exceptions import AuthenticationFailed
+from rest_framework.exceptions import ValidationError as DRFValidationError
 
 class LoginView(TokenObtainPairView):
     permission_classes = [AllowAny]
@@ -33,41 +35,43 @@ class LoginView(TokenObtainPairView):
 
     def post(self, request, *args, **kwargs):
         email = request.data.get("email", "").lower().strip()
-        
+
         try:
-            user = User.objects.select_related('organization').filter(email=email).first()
-            
+            user = User.objects.select_related("organization").filter(email=email).first()
+
             if user:
                 if not user.organization.is_verified:
                     logger.warning(
                         "login_blocked.org_not_verified | email=%s org_id=%s",
-                        email,
-                        user.organization_id,
+                        email, user.organization_id,
                     )
                     return Response(
                         {
                             "error": "Organization not verified",
-                            "message": "Please verify your organization email address before logging in. Check your inbox for the verification link.",
+                            "message": "Please verify your organization email address before logging in.",
                             "email": user.organization.primary_email,
                         },
                         status=status.HTTP_403_FORBIDDEN,
                     )
-            
+
             response = super().post(request, *args, **kwargs)
-            
+
             if response.status_code == 200:
                 logger.info("login_success | email=%s", email)
-            
+
             return response
-            
+
+        except (AuthenticationFailed, DRFValidationError):
+            raise
+
         except Exception as exc:
             logger.exception("login_error | email=%s error=%s", email, str(exc))
             return Response(
                 {"error": "Login failed. Please try again."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
-        
 
+        
 class LogoutView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -82,15 +86,12 @@ class LogoutView(APIView):
 
         try:
             token = RefreshToken(refresh_token)
-            # blacklisting puts this token in the DB blacklist table —
-            # any subsequent /token/refresh/ call with it will be rejected
             token.blacklist()
             logger.info(
                 "LogoutView: token blacklisted | user=%s", request.user.id
             )
             return Response({"message": "Logged out successfully"})
         except TokenError as e:
-            # token already expired or invalid — treat as successful logout
             logger.warning(
                 "LogoutView: TokenError during blacklist (already expired?) | user=%s: %s",
                 request.user.id, e,

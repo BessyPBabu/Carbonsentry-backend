@@ -77,7 +77,6 @@ class DocumentPreprocessor:
             if img.mode != 'RGB':
                 img = img.convert('RGB')
 
-            # resize only if really large
             if img.width > 2048 or img.height > 2048:
                 img.thumbnail((2048, 2048), Image.Resampling.LANCZOS)
                 logger.info("_optimize_image: resized to %s", img.size)
@@ -91,7 +90,6 @@ class DocumentPreprocessor:
                     logger.info("_optimize_image: encoded at quality=%d, size=%d bytes", quality, buf.tell())
                     return True, encoded, None
 
-            # last resort — shrink harder
             img.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
             buf = io.BytesIO()
             img.save(buf, format='JPEG', quality=60, optimize=True)

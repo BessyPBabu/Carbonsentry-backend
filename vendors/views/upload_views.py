@@ -5,7 +5,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import AllowAny
-
+from django.http import Http404
 from vendors.models import Document, Vendor
 from vendors.serializers.public_upload_serializers import VendorPublicUploadSerializer
 from ai_validation.tasks import validate_document_async
@@ -60,7 +60,7 @@ class VendorPublicUploadView(APIView):
                     for doc in pending_docs
                 ]
             }, status=status.HTTP_200_OK)
-
+        
         except Vendor.DoesNotExist:
             logger.warning(
                 "Upload link access rejected - invalid token",
@@ -70,6 +70,10 @@ class VendorPublicUploadView(APIView):
                 {"detail": "Invalid upload link. Please check your email for the correct link."},
                 status=status.HTTP_404_NOT_FOUND,
             )
+        
+        except Http404:
+            raise
+        
         except Exception as e:
             logger.exception(
                 "Failed to load upload form",
@@ -180,6 +184,10 @@ class VendorPublicUploadView(APIView):
                 {"detail": "Invalid upload link. Please check your email for the correct link."},
                 status=status.HTTP_404_NOT_FOUND,
             )
+        
+        except Http404:
+            raise
+
         except Exception as e:
             logger.exception(
                 "Public upload failed",

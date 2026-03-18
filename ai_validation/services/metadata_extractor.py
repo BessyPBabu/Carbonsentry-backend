@@ -42,7 +42,6 @@ class MetadataExtractor:
                 logger.info(
                     "MetadataExtractor: cache hit | validation=%s", validation.id
                 )
-                # rebuild ExtractedMetadata from cached dict
                 metadata = self._save_metadata(validation, cached)
                 return True, metadata, None
 
@@ -94,7 +93,6 @@ class MetadataExtractor:
     def _clean(self, output: MetadataOutput) -> dict:
         cleaned = {}
 
-        # co2 value
         valid, result = self.validator.validate_co2_value(output.co2_value)
         if valid and result is not None:
             cleaned["co2_value"] = Decimal(str(result))
@@ -105,7 +103,6 @@ class MetadataExtractor:
 
         cleaned["co2_unit"] = self.validator.normalize_unit(output.co2_unit)
 
-        # dates
         valid, result = self.validator.validate_date(output.issue_date, is_expiry=False)
         if valid and result:
             cleaned["issue_date"] = result
@@ -125,7 +122,6 @@ class MetadataExtractor:
 
     def _save_metadata(self, validation, data: dict):
         try:
-            # get_or_create so cache replay doesn't cause duplicate errors
             metadata, _ = ExtractedMetadata.objects.update_or_create(
                 document_validation=validation,
                 defaults={

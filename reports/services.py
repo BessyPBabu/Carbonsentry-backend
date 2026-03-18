@@ -59,10 +59,10 @@ class ReportGenerator:
         from vendors.models import Document
         from ai_validation.models import VendorRiskProfile, DocumentValidation
 
-        logger.debug("Generating vendor_risk for vendor=%s", vendor.id)
-
         if not vendor:
             raise ValueError("vendor is required for vendor_risk report")
+        
+        logger.debug("Generating vendor_risk for vendor=%s", vendor.id)
 
         
         try:

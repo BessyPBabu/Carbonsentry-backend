@@ -14,6 +14,9 @@ class VendorCreatorService:
     @transaction.atomic
     def create_vendor(cls, organization, data, industry,send_emails=False):
         try:
+            name = data.get("name", "").strip()
+            if not name:
+                raise VendorCreationError("Vendor name is required")
             vendor = Vendor.objects.create(
                 organization=organization,
                 name=data["name"],
@@ -45,13 +48,7 @@ class VendorCreatorService:
                     "document_count": len(documents),
                 },
             )
-            logger.info(
-                "Vendor created with pending documents",
-                extra={
-                    "vendor_id": str(vendor.id),
-                    "document_count": len(documents),
-                },
-            )
+            
 
             if send_emails is True:
                 try:

@@ -17,22 +17,20 @@ logger = logging.getLogger(__name__)
 class ReportViewSet(viewsets.ModelViewSet):
     serializer_class = ReportSerializer
     permission_classes = [IsAuthenticated]
-    http_method_names = ['get', 'post', 'patch', 'delete', 'head', 'options']
+    http_method_names = ["get", "post", "patch", "delete", "head", "options"]
 
     def get_queryset(self):
         user = self.request.user
         qs = Report.objects.filter(
             organization=user.organization
-        ).select_related('generated_by', 'approved_by', 'vendor')
+        ).select_related("generated_by", "approved_by", "vendor")
 
-    
-        if user.role == 'viewer':
-            qs = qs.filter(status='approved')
+        if user.role == "viewer":
+            qs = qs.filter(status="approved")
 
-        
-        report_type = self.request.query_params.get('report_type')
-        status_filter = self.request.query_params.get('status')
-        vendor_id = self.request.query_params.get('vendor')
+        report_type   = self.request.query_params.get("report_type")
+        status_filter = self.request.query_params.get("status")
+        vendor_id     = self.request.query_params.get("vendor")
 
         if report_type:
             qs = qs.filter(report_type=report_type)
@@ -41,78 +39,66 @@ class ReportViewSet(viewsets.ModelViewSet):
         if vendor_id:
             qs = qs.filter(vendor__id=vendor_id)
 
-        return qs
+        return qs 
 
     def destroy(self, request, *args, **kwargs):
         report = self.get_object()
 
-        
-        if report.status == 'approved':
+        if report.status == "approved":
             logger.warning(
-                "User=%s attempted to delete approved report=%s",
-                request.user.id, report.id
+                "report.delete_blocked | report=%s user=%s", report.id, request.user.id
             )
             return Response(
-                {'error': 'Approved reports cannot be deleted.'},
-                status=status.HTTP_403_FORBIDDEN
+                {"error": "Approved reports cannot be deleted."},
+                status=status.HTTP_403_FORBIDDEN,
             )
 
-        logger.info("Report deleted | report=%s user=%s", report.id, request.user.id)
+        logger.info("report.deleted | report=%s user=%s", report.id, request.user.id)
         return super().destroy(request, *args, **kwargs)
 
-
-    @action(detail=False, methods=['post'], url_path='generate')
+    @action(detail=False, methods=["post"], url_path="generate")
     def generate(self, request):
-        if request.user.role == 'viewer':
+        if request.user.role == "viewer":
             return Response(
-                {'error': 'Viewers cannot generate reports.'},
-                status=status.HTTP_403_FORBIDDEN
+                {"error": "Viewers cannot generate reports."},
+                status=status.HTTP_403_FORBIDDEN,
             )
 
         serializer = GenerateReportSerializer(data=request.data)
         if not serializer.is_valid():
-            logger.warning(
-                "Invalid generate report payload | user=%s errors=%s",
-                request.user.id, serializer.errors
-            )
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        data = serializer.validated_data
-        report_type = data['report_type']
-        vendor = None
+        data        = serializer.validated_data
+        report_type = data["report_type"]
+        vendor      = None
 
-        if data.get('vendor_id'):
+        if data.get("vendor_id"):
             from vendors.models import Vendor
             try:
                 vendor = Vendor.objects.get(
-                    id=data['vendor_id'],
-                    organization=request.user.organization
+                    id=data["vendor_id"],
+                    organization=request.user.organization,
                 )
             except Vendor.DoesNotExist:
-                logger.warning(
-                    "Vendor not found for report generation | vendor_id=%s user=%s",
-                    data['vendor_id'], request.user.id
-                )
                 return Response(
-                    {'error': 'Vendor not found.'},
-                    status=status.HTTP_404_NOT_FOUND
+                    {"error": "Vendor not found."},
+                    status=status.HTTP_404_NOT_FOUND,
                 )
 
-        
         report = Report.objects.create(
             organization=request.user.organization,
             report_type=report_type,
-            title=data['title'],
+            title=data["title"],
             vendor=vendor,
-            date_from=data.get('date_from'),
-            date_to=data.get('date_to'),
+            date_from=data.get("date_from"),
+            date_to=data.get("date_to"),
             generated_by=request.user,
-            status='draft',
+            status="draft",
         )
 
         logger.info(
-            "Report record created | report=%s type=%s user=%s",
-            report.id, report_type, request.user.id
+            "report.created | report=%s type=%s user=%s",
+            report.id, report_type, request.user.id,
         )
 
         try:
@@ -121,111 +107,112 @@ class ReportViewSet(viewsets.ModelViewSet):
                 report_type=report_type,
                 organization=request.user.organization,
                 vendor=vendor,
-                date_from=data.get('date_from'),
-                date_to=data.get('date_to'),
+                date_from=data.get("date_from"),
+                date_to=data.get("date_to"),
             )
-            report.data = report_data
-            report.status = 'generated'
-            report.save(update_fields=['data', 'status'])
+            report.data   = report_data
+            report.status = "generated"
+            report.save(update_fields=["data", "status"])
 
-            logger.info("Report generated successfully | report=%s", report.id)
+            logger.info("report.generated | report=%s", report.id)
 
         except Exception as exc:
-            
-            report.status = 'draft'
-            report.save(update_fields=['status'])
+            report.status = "draft"
+            report.save(update_fields=["status"])
             logger.exception(
-                "Report generation failed | report=%s error=%s", report.id, str(exc)
+                "report.generation_failed | report=%s error=%s", report.id, str(exc)
             )
             return Response(
-                {'error': 'Report generation failed. Please try again.'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                {"error": "Report generation failed. Please try again."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-        out_serializer = ReportSerializer(report)
-        return Response(out_serializer.data, status=status.HTTP_201_CREATED)
+        return Response(ReportSerializer(report).data, status=status.HTTP_201_CREATED)
 
-
-    @action(detail=True, methods=['patch'], url_path='approve')
+    @action(detail=True, methods=["patch"], url_path="approve")
     def approve(self, request, pk=None):
-        if request.user.role not in ('officer', 'admin'):
+        if request.user.role not in ("officer", "admin"):
             return Response(
-                {'error': 'Only officers and admins can approve reports.'},
-                status=status.HTTP_403_FORBIDDEN
+                {"error": "Only officers and admins can approve reports."},
+                status=status.HTTP_403_FORBIDDEN,
             )
 
         report = self.get_object()
 
-        if report.status == 'approved':
+        if report.status == "approved":
             return Response(
-                {'error': 'Report is already approved.'},
-                status=status.HTTP_400_BAD_REQUEST
+                {"error": "Report is already approved."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if report.status == 'draft':
+        if report.status == "draft":
             return Response(
-                {'error': 'Draft reports cannot be approved — generate the report first.'},
-                status=status.HTTP_400_BAD_REQUEST
+                {"error": "Draft reports cannot be approved — generate the report first."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         serializer = ApproveReportSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        report.status = 'approved'
-        report.approved_by = request.user
-        report.approved_at = timezone.now()
-        report.approval_notes = serializer.validated_data.get('approval_notes', '')
-        report.save(update_fields=['status', 'approved_by', 'approved_at', 'approval_notes'])
+        report.status         = "approved"
+        report.approved_by    = request.user
+        report.approved_at    = timezone.now()
+        report.approval_notes = serializer.validated_data.get("approval_notes", "")
+        report.save(update_fields=[
+            "status", "approved_by", "approved_at", "approval_notes"
+        ])
 
         logger.info(
-            "Report approved | report=%s approver=%s", report.id, request.user.id
+            "report.approved | report=%s approver=%s", report.id, request.user.id
         )
+        return Response(ReportSerializer(report).data)
 
-        out_serializer = ReportSerializer(report)
-        return Response(out_serializer.data)
-
-
-
-    @action(detail=True, methods=['get'], url_path='download_pdf')
+    @action(detail=True, methods=["get"], url_path="download_pdf")
     def download_pdf(self, request, pk=None):
         report = self.get_object()
 
-        
-        if request.user.role == 'viewer' and report.status != 'approved':
+        if request.user.role == "viewer" and report.status != "approved":
             return Response(
-                {'error': 'Viewers can only download approved reports.'},
-                status=status.HTTP_403_FORBIDDEN
+                {"error": "Viewers can only download approved reports."},
+                status=status.HTTP_403_FORBIDDEN,
             )
 
-        if report.status == 'draft':
+        if report.status == "draft":
             return Response(
-                {'error': 'Cannot download a draft report — generate it first.'},
-                status=status.HTTP_400_BAD_REQUEST
+                {"error": "Cannot download a draft report — generate it first."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-        logger.info("PDF download requested | report=%s user=%s", report.id, request.user.id)
+        logger.info(
+            "report.pdf_download | report=%s user=%s", report.id, request.user.id
+        )
 
         try:
-            exporter = PDFExporter()
+            exporter  = PDFExporter()
             pdf_bytes = exporter.export(report)
         except RuntimeError as exc:
-            
-            logger.error("PDF export failed | report=%s error=%s", report.id, str(exc))
+            logger.error(
+                "report.pdf_failed | report=%s error=%s", report.id, str(exc)
+            )
             return Response(
-                {'error': str(exc)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                {"error": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
         except Exception as exc:
-            logger.exception("Unexpected PDF export error | report=%s error=%s", report.id, str(exc))
+            logger.exception(
+                "report.pdf_unexpected | report=%s error=%s", report.id, str(exc)
+            )
             return Response(
-                {'error': 'PDF generation failed.'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                {"error": "PDF generation failed."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-        safe_title = "".join(c if c.isalnum() or c in (' ', '-', '_') else '_' for c in report.title)
+        safe_title = "".join(
+            c if c.isalnum() or c in (" ", "-", "_") else "_"
+            for c in report.title
+        )
         filename = f"report_{safe_title[:40]}.pdf"
 
-        response = HttpResponse(pdf_bytes, content_type='application/pdf')
-        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
         return response

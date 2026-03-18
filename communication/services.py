@@ -11,8 +11,6 @@ def send_chat_invitation(chat_token):
     chat_url = f"{frontend_base}/vendor-chat/{chat_token.token}"
 
     subject = f"Secure Chat Invitation — {chat_token.vendor.name}"
-
-    # OTP is prominently displayed so vendors can find it easily
     body = f"""Hello,
 
 You have been invited to a secure chat session regarding compliance documentation for {chat_token.vendor.name}.

@@ -36,11 +36,7 @@ class ReadabilityChecker:
         self.client = LangChainClient()
 
     def check(self, image_base64: str, validation, file_path: str = ""):
-        """
-        Returns (success, result_dict, error).
-        Checks document hash cache first — same file always returns the same result.
-        """
-        # cache check
+        
         if file_path:
             cached = get_cached(file_path, "readability")
             if cached:
@@ -81,7 +77,6 @@ class ReadabilityChecker:
             result = self._default_pass(f"API call failed: {error}")
             return True, result, None
 
-        # enforce: quality_score > 20 always means readable
         is_readable = output.is_readable
         if output.quality_score > 20:
             is_readable = True

@@ -12,9 +12,9 @@ class EnforcePasswordChange(BasePermission):
             return True
 
         allowed_paths = (
-            "/api/auth/logout/",
-            "/api/auth/password/change/",
-            "/api/auth/token/refresh/",
+            "/api/accounts/auth/logout/",
+            "/api/accounts/auth/password/change/",
+            "/api/accounts/auth/token/refresh/",
         )
 
         return request.path.startswith(allowed_paths)
