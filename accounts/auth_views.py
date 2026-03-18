@@ -4,7 +4,7 @@ from django.core.mail import send_mail
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.utils.http import urlsafe_base64_encode
 from django.utils.encoding import force_bytes
-
+from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework.views import APIView
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
@@ -72,23 +72,35 @@ class LogoutView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        try:
-            refresh_token = request.data.get("refresh")
-            if refresh_token:
-                token = RefreshToken(refresh_token)
-                token.blacklist()
-            
-            logger.info("logout_success | user=%s", request.user.email)
-            
+        refresh_token = request.data.get("refresh")
+
+        if not refresh_token:
             return Response(
-                {"message": "Logged out successfully"},
-                status=status.HTTP_200_OK,
+                {"error": "Refresh token is required"},
+                status=status.HTTP_400_BAD_REQUEST,
             )
-        except Exception as exc:
-            logger.warning("logout_error | user=%s error=%s", request.user.email, str(exc))
+
+        try:
+            token = RefreshToken(refresh_token)
+            # blacklisting puts this token in the DB blacklist table —
+            # any subsequent /token/refresh/ call with it will be rejected
+            token.blacklist()
+            logger.info(
+                "LogoutView: token blacklisted | user=%s", request.user.id
+            )
+            return Response({"message": "Logged out successfully"})
+        except TokenError as e:
+            # token already expired or invalid — treat as successful logout
+            logger.warning(
+                "LogoutView: TokenError during blacklist (already expired?) | user=%s: %s",
+                request.user.id, e,
+            )
+            return Response({"message": "Logged out"})
+        except Exception as e:
+            logger.exception("LogoutView: unexpected error | user=%s", request.user.id)
             return Response(
-                {"message": "Logged out"},
-                status=status.HTTP_200_OK,
+                {"error": "Logout failed"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
 

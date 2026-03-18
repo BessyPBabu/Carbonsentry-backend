@@ -33,6 +33,21 @@ class ValidationOrchestrator:
             self._set_step(validation, 'readability')
 
             success, image_base64, error = self.preprocessor.process(document.file.path)
+
+            file_path = document.file.path if document.file else ""
+
+            # step 1 — readability
+            success, result, _ = self.readability_checker.check(image_base64, validation, file_path)
+
+            # step 2 — relevance
+            success, result, _ = self.relevance_classifier.classify(image_base64, validation, file_path)
+
+            # step 3 — authenticity
+            success, result, _ = self.authenticity_analyzer.analyze(image_base64, validation, file_path)
+
+            # step 4 — metadata
+            success, metadata, error = self.metadata_extractor.extract(image_base64, validation, file_path)
+            
             if not success:
                 logger.error("validate_document: preprocessing failed — %s", error)
                 return self._mark_failed(validation, 'preprocessing', error)
