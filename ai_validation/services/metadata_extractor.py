@@ -2,6 +2,7 @@ import io
 import base64
 import logging
 from decimal import Decimal
+from datetime import date
 
 import PIL.Image
 
@@ -38,7 +39,7 @@ NOTE: A future expiry date (e.g. next year) is correct and valid — do not reje
 
 ### issuing_authority
 Name of the organisation that issued, verified, or certified this document.
-Examples: "Bureau Veritas", "SGS", "TÜV Rheinland", "DNV", "EcoAct"
+Examples: "Bureau Veritas", "SGS", "TUV Rheinland", "DNV", "EcoAct"
 Use empty string "" if not identifiable.
 
 ### certificate_number
@@ -51,26 +52,39 @@ The standard or protocol referenced.
 Examples: "ISO 14064", "GHG Protocol", "Verra VCS", "Gold Standard", "PAS 2060"
 Use empty string "" if not mentioned.
 
-## Confidence scoring (0–100)
-
-Score each field independently based on how clearly the value appears in the document:
+## Confidence scoring (0-100)
 
 | Situation                                               | Confidence |
 |---------------------------------------------------------|------------|
-| Value is explicitly labelled and clearly readable       | 85–98      |
-| Value is present but label is implied or formatting     |            |
-| is non-standard                                         | 70–85      |
-| Value is likely present but partially obscured/unclear  | 50–70      |
-| Value is inferred / uncertain                           | 30–50      |
-| Field is completely absent from document                | 0          |
+| Value is explicitly labelled and clearly readable       | 85-98      |
+| Value present but label implied or non-standard         | 70-85      |
+| Value likely present but partially obscured/unclear     | 50-70      |
+| Value inferred / uncertain                              | 30-50      |
+| Field completely absent from document                   | 0          |
 
-Use 85 as the default when a field is clearly present but you're not certain of exact digits.
+Use 85 as the default when a field is clearly present but you are not certain of exact digits.
 
 ## Output rules
 - co2_value: number only, null if absent
 - Dates: YYYY-MM-DD string, null if absent
 - Text fields: empty string "" if absent, never null
 - Do not guess values that are not visible in the document"""
+
+
+def _make_json_safe(obj):
+    """
+    Recursively convert Decimal and date/datetime objects to plain Python
+    types that are safe for json.dumps and Django JSONField / psycopg2.
+    """
+    if isinstance(obj, dict):
+        return {k: _make_json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_make_json_safe(v) for v in obj]
+    if isinstance(obj, Decimal):
+        return float(obj)
+    if isinstance(obj, date):          # also covers datetime (subclass)
+        return obj.isoformat()
+    return obj
 
 
 class MetadataExtractor:
@@ -86,7 +100,8 @@ class MetadataExtractor:
                 logger.info(
                     "MetadataExtractor: cache hit | validation=%s", validation.id
                 )
-                metadata = self._save_metadata(validation, cached)
+                # cached is already JSON-safe (floats/strings), pass as both data and raw
+                metadata = self._save_metadata(validation, cached, raw_data=cached)
                 return True, metadata, None
 
         try:
@@ -119,12 +134,16 @@ class MetadataExtractor:
             )
             return True, self._create_empty_metadata(validation, {"api_error": error}), None
 
+        # cleaned contains Decimal/date objects — correct for model fields
         cleaned = self._clean(output)
 
-        if file_path:
-            set_cached(file_path, "extraction", cleaned)
+        # safe is a plain-Python copy — correct for cache and JSONField
+        safe = _make_json_safe(cleaned)
 
-        metadata = self._save_metadata(validation, cleaned)
+        if file_path:
+            set_cached(file_path, "extraction", safe)   # no more Decimal serialisation error
+
+        metadata = self._save_metadata(validation, cleaned, raw_data=safe)
         if metadata is None:
             return False, None, "Failed to save metadata"
 
@@ -135,6 +154,11 @@ class MetadataExtractor:
         return True, metadata, None
 
     def _clean(self, output: MetadataOutput) -> dict:
+        """
+        Returns a dict with proper Python types (Decimal for numeric fields,
+        date for date fields).  Do NOT pass this directly to json.dumps or
+        Django JSONField — use _make_json_safe(cleaned) first.
+        """
         cleaned = {}
 
         valid, result = self.validator.validate_co2_value(output.co2_value)
@@ -164,7 +188,15 @@ class MetadataExtractor:
 
         return cleaned
 
-    def _save_metadata(self, validation, data: dict):
+    def _save_metadata(self, validation, data: dict, raw_data: dict = None):
+        """
+        data     — dict with Decimal/date types for ORM model fields.
+        raw_data — JSON-safe version for raw_extracted_data JSONField.
+                   Auto-computed from data if not supplied.
+        """
+        if raw_data is None:
+            raw_data = _make_json_safe(data)
+
         try:
             metadata, _ = ExtractedMetadata.objects.update_or_create(
                 document_validation=validation,
@@ -181,11 +213,11 @@ class MetadataExtractor:
                     "issuing_authority_confidence": data.get("issuing_authority_confidence"),
                     "certificate_number": data.get("certificate_number", ""),
                     "verification_standard": data.get("verification_standard", ""),
-                    "raw_extracted_data": data,
+                    "raw_extracted_data": raw_data,   # always JSON-safe floats/strings
                 },
             )
             return metadata
-        except Exception as exc:
+        except Exception:
             logger.exception(
                 "MetadataExtractor._save_metadata: failed | validation=%s", validation.id
             )
@@ -197,11 +229,11 @@ class MetadataExtractor:
                 document_validation=validation,
                 defaults={
                     "document": validation.document,
-                    "raw_extracted_data": raw_data,
+                    "raw_extracted_data": _make_json_safe(raw_data),
                 },
             )
             return metadata
-        except Exception as exc:
+        except Exception:
             logger.exception(
                 "MetadataExtractor._create_empty_metadata: failed | validation=%s", validation.id
             )
