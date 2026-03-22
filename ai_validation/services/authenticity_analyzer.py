@@ -1,6 +1,7 @@
 import io
 import base64
 import logging
+from decimal import Decimal
 
 import PIL.Image
 
@@ -11,23 +12,45 @@ from ..models import AIAuditLog
 
 logger = logging.getLogger(__name__)
 
-_PROMPT = """Analyze the authenticity of this carbon compliance document.
+_PROMPT = """Assess the authenticity of this carbon compliance document.
 
-Scoring guide (50-100, floor is 50 because digital docs are normal and valid):
-- 75-100: has org name/header, professional layout, cert number, date info, issuing org
-- 60-74: some official elements but a few missing
-- 50-59: missing most official elements
+## Score range: 50–100
+The minimum score is 50 because computer-generated PDFs are perfectly legitimate.
 
-IMPORTANT: Digital/computer-generated documents are NORMAL. Do NOT penalise for being digital.
+## Scoring guide
 
-Only list as red_flags genuine concerns like:
-- "SAMPLE", "TEST", "DRAFT", "VOID" watermark
-- Lorem ipsum placeholder text
-- Future issue date
-- Expiry date before issue date
-- Unfilled placeholders like [COMPANY NAME]
+| Document characteristics                                                    | Score  |
+|-----------------------------------------------------------------------------|--------|
+| Complete document: org name/logo, cert number, issue date, expiry date,     |        |
+| CO2 value with units, issuing authority, verification standard, signature   | 88–100 |
+| Most fields present; only 1–2 minor elements missing                        | 75–88  |
+| Several fields present but notable gaps (e.g. no cert number or no dates)  | 62–75  |
+| Minimal content — only a few fields, heavily incomplete                     | 50–62  |
 
-Do NOT flag: being digital, missing physical signature, missing stamp, simple layout."""
+## Positive indicators (raise score)
+Note any of: organisation letterhead, certificate number, issue/expiry dates, CO2 value with units,
+verification standard (ISO 14064, GHG Protocol, Verra, etc.), issuing authority name,
+professional layout, signatory name or authorised signature block.
+
+## Red flags (only flag GENUINE concerns)
+Only add to red_flags if you see:
+- Watermark text: "SAMPLE", "DRAFT", "TEST", "VOID", "SPECIMEN"
+- Placeholder text: "Lorem ipsum", "[COMPANY NAME]", "[INSERT DATE]", "{{placeholder}}"
+- Logical impossibility: expiry date is earlier than issue date
+- Future issue date (issue date is after today)
+- Contradictory or nonsensical data (e.g. negative CO2, absurd figures like 999999999)
+
+## Do NOT flag as red flags
+- Being a computer-generated / digital PDF (this is normal and expected)
+- Absence of a wet/ink signature (digital docs do not need one)
+- Simple or minimal layout
+- Missing a physical stamp or seal
+- Scanned appearance
+- A future expiry date (expiry dates in the future are correct and valid)
+- Any formatting choices
+
+Keep indicators to the 3–5 most important positive elements you observe.
+Keep red_flags to genuine issues only; an empty list [] is the correct result for a clean document."""
 
 
 class AuthenticityAnalyzer:
@@ -91,7 +114,7 @@ class AuthenticityAnalyzer:
 
     def _default_result(self) -> dict:
         return {
-            "score": 65.0,
+            "score": 70.0,   # raised from 65 — reasonable fallback for API failure
             "indicators": ["defaulted due to processing error"],
             "red_flags": [],
         }

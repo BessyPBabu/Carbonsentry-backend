@@ -13,20 +13,64 @@ from ..models import AIAuditLog, ExtractedMetadata
 
 logger = logging.getLogger(__name__)
 
-_PROMPT = """Extract data from this carbon compliance document.
+_PROMPT = """Extract structured data from this carbon compliance document.
 
-Rules:
-1. co2_value: number only (from "1,250 tonnes CO2e" extract 1250.0). null if not found.
-2. co2_unit: "tonnes", "kg", or "metric_tons". Default "tonnes".
-3. issue_date: YYYY-MM-DD. Look for "Issue Date", "Date of Issue", "Certified on". null if not found.
-4. expiry_date: YYYY-MM-DD. Look for "Valid Until", "Expiry Date", "Expires". null if not found.
-   Expiry dates in the future are correct and valid — do not reject them.
-5. issuing_authority: organisation that issued this. Empty string if not found.
-6. certificate_number: any ID or reference number. Empty string if not found.
-7. verification_standard: e.g. "ISO 14064", "GHG Protocol". Empty string if not found.
-8. confidence fields: 0-100. Use 70 as default if value is found but not perfectly clear.
+## Fields to extract
 
-Use null for missing numbers, empty string for missing text. Do not guess."""
+### co2_value
+Extract the numeric CO2/emissions figure only (no units).
+Examples: "1,250 tonnes CO2e" → 1250.0 | "500 kg CO2" → 500.0
+Use null if no emissions figure is present.
+
+### co2_unit
+One of: "tonnes", "kg", "metric_tons". Default "tonnes" when unit is ambiguous or missing.
+
+### issue_date
+The date the certificate or report was issued/certified.
+Look for: "Issue Date", "Date of Issue", "Certified on", "Report Date", "Date Issued"
+Format: YYYY-MM-DD. Use null if not found.
+
+### expiry_date
+The date the certificate expires or the reporting period ends.
+Look for: "Valid Until", "Expiry Date", "Expires", "Valid Through", "Period End"
+Format: YYYY-MM-DD. Use null if not found.
+NOTE: A future expiry date (e.g. next year) is correct and valid — do not reject it.
+
+### issuing_authority
+Name of the organisation that issued, verified, or certified this document.
+Examples: "Bureau Veritas", "SGS", "TÜV Rheinland", "DNV", "EcoAct"
+Use empty string "" if not identifiable.
+
+### certificate_number
+Any reference number, certificate ID, or document identifier.
+Examples: "BV-2024-001", "CERT/ISO/2024/1234", "REF: CS-789"
+Use empty string "" if not present.
+
+### verification_standard
+The standard or protocol referenced.
+Examples: "ISO 14064", "GHG Protocol", "Verra VCS", "Gold Standard", "PAS 2060"
+Use empty string "" if not mentioned.
+
+## Confidence scoring (0–100)
+
+Score each field independently based on how clearly the value appears in the document:
+
+| Situation                                               | Confidence |
+|---------------------------------------------------------|------------|
+| Value is explicitly labelled and clearly readable       | 85–98      |
+| Value is present but label is implied or formatting     |            |
+| is non-standard                                         | 70–85      |
+| Value is likely present but partially obscured/unclear  | 50–70      |
+| Value is inferred / uncertain                           | 30–50      |
+| Field is completely absent from document                | 0          |
+
+Use 85 as the default when a field is clearly present but you're not certain of exact digits.
+
+## Output rules
+- co2_value: number only, null if absent
+- Dates: YYYY-MM-DD string, null if absent
+- Text fields: empty string "" if absent, never null
+- Do not guess values that are not visible in the document"""
 
 
 class MetadataExtractor:
@@ -106,15 +150,15 @@ class MetadataExtractor:
         valid, result = self.validator.validate_date(output.issue_date, is_expiry=False)
         if valid and result:
             cleaned["issue_date"] = result
-            cleaned["issue_date_confidence"] = Decimal(str(output.issue_date_confidence))
+            cleaned["issue_date_confidence"] = Decimal(str(min(100, max(0, output.issue_date_confidence))))
 
         valid, result = self.validator.validate_date(output.expiry_date, is_expiry=True)
         if valid and result:
             cleaned["expiry_date"] = result
-            cleaned["expiry_date_confidence"] = Decimal(str(output.expiry_date_confidence))
+            cleaned["expiry_date_confidence"] = Decimal(str(min(100, max(0, output.expiry_date_confidence))))
 
         cleaned["issuing_authority"] = str(output.issuing_authority or "")[:500]
-        cleaned["issuing_authority_confidence"] = Decimal(str(output.issuing_authority_confidence))
+        cleaned["issuing_authority_confidence"] = Decimal(str(min(100, max(0, output.issuing_authority_confidence))))
         cleaned["certificate_number"] = str(output.certificate_number or "")[:255]
         cleaned["verification_standard"] = str(output.verification_standard or "")[:100]
 

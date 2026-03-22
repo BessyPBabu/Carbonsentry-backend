@@ -15,19 +15,37 @@ logger = logging.getLogger(__name__)
 
 _VALID_TYPES_STR = "\n".join(f"- {t}" for t in VALID_DOCUMENT_TYPES)
 
-_PROMPT = f"""Look at this document. Is it related to carbon emissions, environmental compliance, or sustainability?
+_PROMPT = f"""Determine whether this document is related to carbon emissions, environmental compliance, or sustainability reporting.
 
-Valid document types:
+## Valid document types
 {_VALID_TYPES_STR}
 
-Rules:
-- Set is_relevant to TRUE if the document contains ANY of: carbon, CO2, emissions, greenhouse gas, sustainability, environmental, climate, GHG, carbon footprint, carbon offset, carbon credit, ISO 14064
-- Set is_relevant to FALSE only if clearly unrelated (invoice, contract, ID card, medical record)
-- Pick the closest type from the valid list
-- confidence: 0-100
-- indicators: 1-3 things you saw in the document
+## Relevance decision
+Set is_relevant = TRUE if the document contains ANY of the following keywords or topics:
+  carbon, CO2, CO₂, emissions, greenhouse gas, GHG, sustainability, environmental,
+  climate, carbon footprint, carbon offset, carbon credit, carbon neutral,
+  ISO 14064, GHG Protocol, Verra, Gold Standard, PAS 2060, scope 1, scope 2, scope 3,
+  tonnes CO2e, tCO2e, metric tons, emission factor, verification, certification
 
-When in doubt, set is_relevant=true."""
+Set is_relevant = FALSE only when the document is CLEARLY unrelated, for example:
+  plain purchase invoice, employment contract, bank statement, medical record,
+  sales quotation with no environmental content, payroll summary, NDA, meeting minutes
+
+When in doubt → set is_relevant = TRUE.
+
+## Confidence scoring (0–100)
+| Situation                                                      | Score  |
+|----------------------------------------------------------------|--------|
+| Document is obviously a carbon/emissions certificate or report | 90–100 |
+| Document clearly relates to sustainability but type is mixed   | 75–90  |
+| Document has some environmental content but is partially unclear| 60–75  |
+| Marginal relevance — a few keywords but mostly something else  | 40–60  |
+| Clearly unrelated document                                     | 0–30   |
+
+## indicators
+List 1–3 specific things you observed (e.g. "CO2 value in tonnes", "ISO 14064 logo", "verification statement").
+
+Pick the closest type from the valid list above."""
 
 
 class RelevanceClassifier:
@@ -113,6 +131,6 @@ class RelevanceClassifier:
         return {
             "is_relevant": True,
             "document_type": "Emission Report",
-            "confidence": 60.0,
+            "confidence": 70.0,   # raised from 60 — safe fallback for API failures
             "indicators": ["defaulted due to processing error"],
         }

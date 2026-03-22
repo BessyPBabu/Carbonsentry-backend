@@ -49,6 +49,13 @@ class DataValidator:
 
     @staticmethod
     def validate_date(date_str, is_expiry=False):
+        """
+        Validate and parse a date string.
+
+        For issue dates (is_expiry=False): reject dates more than 30 days in the future.
+        For expiry dates (is_expiry=True):  future dates are valid and expected.
+        Both: reject dates before year 2000 or after 2060.
+        """
         if not date_str:
             return True, None
 
@@ -70,14 +77,17 @@ class DataValidator:
             logger.warning("validate_date: '%s' is before year 2000", date_str)
             return False, f"Date {date_str} too far in the past"
 
-        if parsed > date(2050, 12, 31):
-            logger.warning("validate_date: '%s' is after 2050", date_str)
+        if parsed > date(2060, 12, 31):
+            logger.warning("validate_date: '%s' is after 2060", date_str)
             return False, f"Date {date_str} unrealistically far in the future"
 
+        # Issue dates must not be more than 30 days in the future
         if not is_expiry:
             if parsed > date.today() + timedelta(days=30):
                 logger.warning("validate_date: issue date '%s' is in the future", date_str)
                 return False, f"Issue date {date_str} is in the future"
+
+        # Expiry dates in the future are perfectly valid — no additional check needed
 
         return True, parsed
 

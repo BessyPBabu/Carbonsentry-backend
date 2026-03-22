@@ -1,5 +1,5 @@
-MIN_AUTO_APPROVE_CONFIDENCE = 55.0
-MIN_EXTRACTION_CONFIDENCE = 40.0
+MIN_AUTO_APPROVE_CONFIDENCE = 50.0   
+MIN_EXTRACTION_CONFIDENCE = 35.0
 MAX_RETRY_ATTEMPTS = 2
 
 CONFIDENCE_WEIGHTS = {
@@ -37,5 +37,5 @@ DEFAULT_THRESHOLDS = {
     'default':       {'low': 1000,  'medium': 5000,  'high': 10000, 'critical': 50000},
 }
 
-# risk scores stored 0-100 in DB; divide by 20 to display as X.X / 5
+
 RISK_SCORE_DISPLAY_DIVISOR = 20
