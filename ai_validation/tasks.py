@@ -1,145 +1,170 @@
-from celery import shared_task
-from django.apps import apps
-import time
-from django.utils import timezone
-from django.db import transaction, IntegrityError
-from prometheus_client import Counter, Histogram
-
 import logging
+import time
+
+from celery import shared_task
+from celery.exceptions import SoftTimeLimitExceeded
+from django.apps import apps
+from django.db import IntegrityError, transaction
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
+# soft_time_limit raises SoftTimeLimitExceeded so we can clean up.
+# time_limit hard-kills the worker process after an additional 30 s.
+# Together they ensure no validation ever stays "processing" for more than ~2 min.
+_SOFT_LIMIT = 120
+_HARD_LIMIT = 150
 
-validation_counter = Counter(
-    'carbonsentry_validations_total',
-    'Total document validations run',
-    ['status'] 
+
+@shared_task(
+    bind=True,
+    max_retries=2,
+    soft_time_limit=_SOFT_LIMIT,
+    time_limit=_HARD_LIMIT,
 )
+def validate_document_async(self, document_id: str):
+    from .metrics import (
+        active_validations,
+        confidence_histogram,
+        validation_counter,
+        validation_duration,
+    )
 
-validation_duration = Histogram(
-    'carbonsentry_validation_duration_seconds',
-    'Time taken for full validation pipeline',
-    buckets=[1, 2, 5, 10, 20, 30, 60]
-)
+    Document = apps.get_model("vendors", "Document")
+    DocumentValidation = apps.get_model("ai_validation", "DocumentValidation")
 
-gemini_call_counter = Counter(
-    'carbonsentry_gemini_calls_total',
-    'Gemini API calls per pipeline step',
-    ['step', 'success']  
-)
-
-confidence_histogram = Histogram(
-    'carbonsentry_confidence_score',
-    'Distribution of AI confidence scores',
-    buckets=[10, 20, 30, 40, 50, 55, 60, 70, 80, 90, 100]
-)
-
-@shared_task(bind=True, max_retries=3)
-def validate_document_async(self, document_id):
-    Document = apps.get_model('vendors', 'Document')
-    DocumentValidation = apps.get_model('ai_validation', 'DocumentValidation')
-
+    # ── Fetch and lock document ──────────────────────────────────────────────
     try:
-        logger.info(f"Starting validation for document {document_id}")
-        
         with transaction.atomic():
-            document = (
-                Document.objects
-                .select_for_update()
-                .select_related('vendor', 'document_type')
-                .get(id=document_id)
-            )
-            
+            try:
+                document = (
+                    Document.objects
+                    .select_for_update()
+                    .select_related("vendor", "document_type")
+                    .get(id=document_id)
+                )
+            except Document.DoesNotExist:
+                logger.error("validate_document_async: document not found document_id=%s", document_id)
+                return {"success": False, "error": "document_not_found", "document_id": str(document_id)}
+
             if not document.file:
-                logger.error(f"Document {document_id} has no file attached")
-                return {
-                    "success": False,
-                    "error": "No file attached",
-                    "document_id": str(document_id)
-                }
+                logger.error("validate_document_async: no file attached document=%s", document_id)
+                return {"success": False, "error": "no_file", "document_id": str(document_id)}
 
             validation, created = DocumentValidation.objects.get_or_create(
                 document=document,
-                defaults={
-                    "status": "processing",
-                    "started_at": timezone.now()
-                }
+                defaults={"status": "processing", "started_at": timezone.now()},
             )
 
             if not created:
-                logger.info(f"Resetting validation {validation.id}")
+                if validation.status == "processing" and self.request.retries == 0:
+                    logger.warning(
+                        "validate_document_async: already processing document=%s", document_id
+                    )
+                    return {
+                        "success": False,
+                        "error": "already_processing",
+                        "validation_id": str(validation.id),
+                    }
+                # Reset for retry
                 validation.status = "processing"
                 validation.current_step = "not_started"
                 validation.started_at = timezone.now()
                 validation.error_message = ""
-                validation.retry_count = 0
-                validation.save()
+                validation.retry_count = (validation.retry_count or 0) + 1
+                validation.save(update_fields=[
+                    "status", "current_step", "started_at", "error_message", "retry_count"
+                ])
 
-        from .services.orchestrator import ValidationOrchestrator
-
-        start = time.time()
-
-        orchestrator = ValidationOrchestrator()
-        validation = orchestrator.validate_document(document, validation)
-
-        validation_duration.observe(time.time() - start)
-
-        if validation.status == "failed":
-            logger.error(
-                f"Validation {validation.id} failed at '{validation.current_step}': "
-                f"{validation.error_message}"
-            )
-            validation_counter.labels(status='failed').inc()
-        else:
-            logger.info(f"Validation {validation.id} completed successfully")
-            validation.status = "completed"
-            validation.completed_at = timezone.now()
-            validation.save(update_fields=["status", "completed_at"])
-
-            if validation.requires_manual_review:
-                validation_counter.labels(status='manual_review').inc()
-            else:
-                validation_counter.labels(status='valid').inc()
-
-            if validation.overall_confidence:
-                confidence_histogram.observe(float(validation.overall_confidence))
-
-        return {
-            "success": validation.status != "failed",
-            "document_id": str(document_id),
-            "validation_id": str(validation.id),
-            "status": validation.status,
-            "error": validation.error_message if validation.status == "failed" else None
-        }
-    
     except IntegrityError:
-        logger.warning(f"Validation already exists for document {document_id}")
-        validation = DocumentValidation.objects.get(document_id=document_id)
-        return {
-            "success": False,
-            "error": "Validation already exists",
-            "validation_id": str(validation.id)
-        }
+        logger.warning("validate_document_async: integrity error document=%s", document_id)
+        return {"success": False, "error": "integrity_error", "document_id": str(document_id)}
+    except Exception as exc:
+        logger.error("validate_document_async: setup failed document=%s — %s", document_id, exc)
+        return {"success": False, "error": str(exc), "document_id": str(document_id)}
 
-    except Document.DoesNotExist:
-        logger.error(f"Document {document_id} not found")
-        return {
-            "success": False,
-            "error": "Document not found"
-        }
+    # ── Run validation pipeline ──────────────────────────────────────────────
+    active_validations.inc()
+    t0 = time.monotonic()
 
-    except Exception as e:
-        validation_counter.labels(status='failed').inc()
-        logger.exception(f"Failed to validate document {document_id}")
-        
+    try:
+        from .services.orchestrator import ValidationOrchestrator
+        validation = ValidationOrchestrator().validate_document(document, validation)
+
+    except SoftTimeLimitExceeded:
+        elapsed = round(time.monotonic() - t0, 2)
+        logger.error(
+            "validate_document_async: soft time limit exceeded document=%s elapsed=%.2fs",
+            document_id, elapsed,
+        )
         try:
-            validation = DocumentValidation.objects.filter(document_id=document_id).first()
-            if validation:
-                validation.status = "failed"
-                validation.error_message = str(e)
-                validation.retry_count += 1
-                validation.save(update_fields=["status", "error_message", "retry_count"])
-        except Exception as save_error:
-            logger.error(f"Could not save validation error: {save_error}")
+            v = DocumentValidation.objects.filter(document_id=document_id).first()
+            if v and v.status == "processing":
+                v.status = "failed"
+                v.error_message = f"soft_time_limit_exceeded_after_{elapsed}s"
+                v.requires_manual_review = True
+                v.flagged_reason = "timed_out"
+                v.save(update_fields=["status", "error_message", "requires_manual_review", "flagged_reason"])
+        except Exception:
+            pass
+        active_validations.dec()
+        validation_counter.labels(status="failed").inc()
+        validation_duration.observe(elapsed)
+        return {"success": False, "error": "timeout", "document_id": str(document_id)}
 
-        raise self.retry(exc=e, countdown=60 * (self.request.retries + 1))
+    except Exception as exc:
+        elapsed = round(time.monotonic() - t0, 2)
+        logger.exception(
+            "validate_document_async: unhandled error document=%s elapsed=%.2fs — %s",
+            document_id, elapsed, exc,
+        )
+        try:
+            v = DocumentValidation.objects.filter(document_id=document_id).first()
+            if v:
+                v.status = "failed"
+                v.error_message = str(exc)[:1000]
+                v.retry_count = (v.retry_count or 0) + 1
+                v.save(update_fields=["status", "error_message", "retry_count"])
+        except Exception:
+            pass
+        active_validations.dec()
+        validation_counter.labels(status="failed").inc()
+        validation_duration.observe(elapsed)
+        raise self.retry(exc=exc, countdown=30 * (self.request.retries + 1))
+
+    # ── Record metrics ───────────────────────────────────────────────────────
+    elapsed = round(time.monotonic() - t0, 2)
+    active_validations.dec()
+    validation_duration.observe(elapsed)
+
+    if validation.status == "failed":
+        validation_counter.labels(status="failed").inc()
+        logger.error(
+            "validate_document_async: failed document=%s step=%s elapsed=%.2fs",
+            document_id, validation.current_step, elapsed,
+        )
+    elif validation.requires_manual_review:
+        validation_counter.labels(status="manual_review").inc()
+        logger.info(
+            "validate_document_async: flagged document=%s confidence=%.1f elapsed=%.2fs",
+            document_id, float(validation.overall_confidence or 0), elapsed,
+        )
+    else:
+        validation_counter.labels(status="valid").inc()
+        logger.info(
+            "validate_document_async: completed document=%s confidence=%.1f elapsed=%.2fs",
+            document_id, float(validation.overall_confidence or 0), elapsed,
+        )
+
+    if validation.overall_confidence is not None:
+        confidence_histogram.observe(float(validation.overall_confidence))
+
+    return {
+        "success": validation.status != "failed",
+        "document_id": str(document_id),
+        "validation_id": str(validation.id),
+        "status": validation.status,
+        "confidence": float(validation.overall_confidence or 0),
+        "requires_review": validation.requires_manual_review,
+        "elapsed_s": elapsed,
+    }

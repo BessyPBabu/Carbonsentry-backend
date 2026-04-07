@@ -14,15 +14,13 @@ class ReportSerializer(serializers.ModelSerializer):
         model = Report
         fields = [
             "id", "report_type", "title", "status",
-            "vendor", "vendor_name",
-            "data",
+            "vendor", "vendor_name", "data",
             "date_from", "date_to",
             "generated_by", "generated_by_name", "generated_at",
             "approved_by", "approved_by_name", "approved_at", "approval_notes",
         ]
         read_only_fields = [
-            "id", "status", "data",
-            "generated_by", "generated_at",
+            "id", "status", "data", "generated_by", "generated_at",
             "approved_by", "approved_at",
         ]
 
@@ -42,8 +40,11 @@ class ReportSerializer(serializers.ModelSerializer):
 
 class GenerateReportSerializer(serializers.Serializer):
     report_type = serializers.ChoiceField(choices=[
-        "vendor_risk", "compliance_summary",
-        "emissions_overview", "document_audit",
+        "vendor_risk",
+        "compliance_summary",
+        "emissions_overview",
+        "document_audit",
+        "vendor_compliance_report",
     ])
     title     = serializers.CharField(max_length=255)
     vendor_id = serializers.UUIDField(required=False, allow_null=True)
@@ -51,14 +52,12 @@ class GenerateReportSerializer(serializers.Serializer):
     date_to   = serializers.DateField(required=False, allow_null=True)
 
     def validate(self, data):
-        if data.get("report_type") == "vendor_risk" and not data.get("vendor_id"):
+        if data.get('report_type') in ('vendor_risk', 'vendor_compliance_report') and not data.get('vendor_id'):
             raise serializers.ValidationError(
-                {"vendor_id": "vendor_id is required for vendor_risk reports."}
+                {"vendor_id": "vendor_id is required for this report type."}
             )
         return data
 
 
 class ApproveReportSerializer(serializers.Serializer):
-    approval_notes = serializers.CharField(
-        required=False, allow_blank=True, default=""
-    )
+    approval_notes = serializers.CharField(required=False, allow_blank=True, default="")

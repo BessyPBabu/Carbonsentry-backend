@@ -34,21 +34,32 @@ class DocumentListSerializer(serializers.ModelSerializer):
         ]
 
     def get_validation(self, obj):
-        """Get validation info if exists"""
         try:
             validation = obj.validation
-            return {
+            result = {
                 'id': str(validation.id),
                 'status': validation.status,
                 'current_step': validation.current_step,
                 'overall_confidence': float(validation.overall_confidence) if validation.overall_confidence else None,
-                'requires_manual_review': validation.requires_manual_review
+                'requires_manual_review': validation.requires_manual_review,
+                'metadata': None,
             }
+            try:
+                meta = validation.metadata
+                result['metadata'] = {
+                    'co2_value':                 float(meta.co2_value) if meta.co2_value else None,
+                    'co2_unit':                  meta.co2_unit or 'tonnes',
+                    'co2_extraction_confidence': float(meta.co2_extraction_confidence) if meta.co2_extraction_confidence else None,
+                    'expiry_date':               meta.expiry_date.isoformat() if meta.expiry_date else None,
+                    'issuing_authority':         meta.issuing_authority or '',
+                }
+            except Exception:
+                pass  
+            return result
         except DocumentValidation.DoesNotExist:
             return None
         
     def get_file_url(self, obj):
-        """Get secure file URL for viewing"""
         if obj.file:
             request = self.context.get('request')
             if request:

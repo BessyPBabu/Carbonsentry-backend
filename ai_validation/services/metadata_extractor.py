@@ -1,88 +1,29 @@
-import io
 import base64
+import io
 import logging
-from decimal import Decimal
 from datetime import date
+from decimal import Decimal
 
 import PIL.Image
 
-from .langchain_client import LangChainClient
-from .schemas import MetadataOutput
+from .langchain_client import LangChainClient, CALL_TIMEOUT_EXTRACTION
+from .prompt_registry import EXTRACTION_PROMPT
 from .document_cache import get_cached, set_cached
 from .validators import DataValidator
 from ..models import AIAuditLog, ExtractedMetadata
+from .schemas import MetadataOutput
 
 logger = logging.getLogger(__name__)
 
-_PROMPT = """Extract structured data from this carbon compliance document.
 
-## Fields to extract
-
-### co2_value
-Extract the numeric CO2/emissions figure only (no units).
-Examples: "1,250 tonnes CO2e" → 1250.0 | "500 kg CO2" → 500.0
-Use null if no emissions figure is present.
-
-### co2_unit
-One of: "tonnes", "kg", "metric_tons". Default "tonnes" when unit is ambiguous or missing.
-
-### issue_date
-The date the certificate or report was issued/certified.
-Look for: "Issue Date", "Date of Issue", "Certified on", "Report Date", "Date Issued"
-Format: YYYY-MM-DD. Use null if not found.
-
-### expiry_date
-The date the certificate expires or the reporting period ends.
-Look for: "Valid Until", "Expiry Date", "Expires", "Valid Through", "Period End"
-Format: YYYY-MM-DD. Use null if not found.
-NOTE: A future expiry date (e.g. next year) is correct and valid — do not reject it.
-
-### issuing_authority
-Name of the organisation that issued, verified, or certified this document.
-Examples: "Bureau Veritas", "SGS", "TUV Rheinland", "DNV", "EcoAct"
-Use empty string "" if not identifiable.
-
-### certificate_number
-Any reference number, certificate ID, or document identifier.
-Examples: "BV-2024-001", "CERT/ISO/2024/1234", "REF: CS-789"
-Use empty string "" if not present.
-
-### verification_standard
-The standard or protocol referenced.
-Examples: "ISO 14064", "GHG Protocol", "Verra VCS", "Gold Standard", "PAS 2060"
-Use empty string "" if not mentioned.
-
-## Confidence scoring (0-100)
-
-| Situation                                               | Confidence |
-|---------------------------------------------------------|------------|
-| Value is explicitly labelled and clearly readable       | 85-98      |
-| Value present but label implied or non-standard         | 70-85      |
-| Value likely present but partially obscured/unclear     | 50-70      |
-| Value inferred / uncertain                              | 30-50      |
-| Field completely absent from document                   | 0          |
-
-Use 85 as the default when a field is clearly present but you are not certain of exact digits.
-
-## Output rules
-- co2_value: number only, null if absent
-- Dates: YYYY-MM-DD string, null if absent
-- Text fields: empty string "" if absent, never null
-- Do not guess values that are not visible in the document"""
-
-
-def _make_json_safe(obj):
-    """
-    Recursively convert Decimal and date/datetime objects to plain Python
-    types that are safe for json.dumps and Django JSONField / psycopg2.
-    """
+def _json_safe(obj):
     if isinstance(obj, dict):
-        return {k: _make_json_safe(v) for k, v in obj.items()}
+        return {k: _json_safe(v) for k, v in obj.items()}
     if isinstance(obj, list):
-        return [_make_json_safe(v) for v in obj]
+        return [_json_safe(v) for v in obj]
     if isinstance(obj, Decimal):
         return float(obj)
-    if isinstance(obj, date):          # also covers datetime (subclass)
+    if isinstance(obj, date):
         return obj.isoformat()
     return obj
 
@@ -93,92 +34,67 @@ class MetadataExtractor:
         self.client = LangChainClient()
         self.validator = DataValidator()
 
-    def extract(self, image_base64: str, validation, file_path: str = ""):
+    def extract(
+        self, image_base64: str, validation, file_path: str = ""
+    ) -> tuple[bool, ExtractedMetadata | None, str | None]:
         if file_path:
             cached = get_cached(file_path, "extraction")
             if cached:
-                logger.info(
-                    "MetadataExtractor: cache hit | validation=%s", validation.id
-                )
-                # cached is already JSON-safe (floats/strings), pass as both data and raw
-                metadata = self._save_metadata(validation, cached, raw_data=cached)
-                return True, metadata, None
+                metadata = self._save(validation, cached, raw=cached)
+                return (True, metadata, None) if metadata else (False, None, "cache_save_failed")
 
         try:
             PIL.Image.open(io.BytesIO(base64.b64decode(image_base64)))
         except Exception as exc:
-            logger.exception(
-                "MetadataExtractor: image decode failed | validation=%s", validation.id
+            logger.warning(
+                "metadata_extractor: image decode failed validation=%s — %s", validation.id, exc
             )
-            return True, self._create_empty_metadata(validation, {"decode_error": str(exc)}), None
+            return True, self._empty(validation, {"decode_error": str(exc)}), None
 
-        success, output, error = self.client.call_structured(
-            prompt=_PROMPT,
+        ok, output, err = self.client.call_structured(
+            prompt=EXTRACTION_PROMPT,
             image_base64=image_base64,
             schema=MetadataOutput,
+            step="extraction",
+            timeout_seconds=CALL_TIMEOUT_EXTRACTION,
         )
 
-        AIAuditLog.objects.create(
-            document_validation=validation,
-            validation_step="extraction",
-            prompt_sent=_PROMPT,
-            raw_response=str(output.model_dump()) if output else (error or ""),
-            success=success,
-            error_message=error or "",
-            model_used="gemini-2.5-flash",
-        )
+        self._log(validation, ok, output, err)
 
-        if not success or output is None:
+        if not ok or output is None:
             logger.warning(
-                "MetadataExtractor: Gemini failed | validation=%s — %s", validation.id, error
+                "metadata_extractor: gemini failed validation=%s — %s", validation.id, err
             )
-            return True, self._create_empty_metadata(validation, {"api_error": error}), None
+            return True, self._empty(validation, {"api_error": err}), None
 
-        # cleaned contains Decimal/date objects — correct for model fields
         cleaned = self._clean(output)
-
-        # safe is a plain-Python copy — correct for cache and JSONField
-        safe = _make_json_safe(cleaned)
+        safe = _json_safe(cleaned)
 
         if file_path:
-            set_cached(file_path, "extraction", safe)   # no more Decimal serialisation error
+            set_cached(file_path, "extraction", safe)
 
-        metadata = self._save_metadata(validation, cleaned, raw_data=safe)
+        metadata = self._save(validation, cleaned, raw=safe)
         if metadata is None:
-            return False, None, "Failed to save metadata"
+            return False, None, "db_save_failed"
 
-        logger.info(
-            "MetadataExtractor: done | validation=%s co2=%s expiry=%s",
-            validation.id, cleaned.get("co2_value"), cleaned.get("expiry_date"),
-        )
         return True, metadata, None
 
     def _clean(self, output: MetadataOutput) -> dict:
-        """
-        Returns a dict with proper Python types (Decimal for numeric fields,
-        date for date fields).  Do NOT pass this directly to json.dumps or
-        Django JSONField — use _make_json_safe(cleaned) first.
-        """
         cleaned = {}
 
-        valid, result = self.validator.validate_co2_value(output.co2_value)
-        if valid and result is not None:
-            cleaned["co2_value"] = Decimal(str(result))
-            cleaned["co2_confidence"] = Decimal(str(min(100, max(0, output.co2_confidence))))
-        else:
-            cleaned["co2_value"] = None
-            cleaned["co2_confidence"] = Decimal("0")
-
+        ok, val = self.validator.validate_co2_value(output.co2_value)
+        cleaned["co2_value"] = Decimal(str(val)) if ok and val is not None else None
+        cleaned["co2_confidence"] = Decimal(str(min(100, max(0, output.co2_confidence)))) if ok and val else Decimal("0")
         cleaned["co2_unit"] = self.validator.normalize_unit(output.co2_unit)
 
-        valid, result = self.validator.validate_date(output.issue_date, is_expiry=False)
-        if valid and result:
-            cleaned["issue_date"] = result
+        ok, val = self.validator.validate_date(output.issue_date, is_expiry=False)
+        if ok and val:
+            cleaned["issue_date"] = val
             cleaned["issue_date_confidence"] = Decimal(str(min(100, max(0, output.issue_date_confidence))))
 
-        valid, result = self.validator.validate_date(output.expiry_date, is_expiry=True)
-        if valid and result:
-            cleaned["expiry_date"] = result
+        ok, val = self.validator.validate_date(output.expiry_date, is_expiry=True)
+        if ok and val:
+            cleaned["expiry_date"] = val
             cleaned["expiry_date_confidence"] = Decimal(str(min(100, max(0, output.expiry_date_confidence))))
 
         cleaned["issuing_authority"] = str(output.issuing_authority or "")[:500]
@@ -188,15 +104,7 @@ class MetadataExtractor:
 
         return cleaned
 
-    def _save_metadata(self, validation, data: dict, raw_data: dict = None):
-        """
-        data     — dict with Decimal/date types for ORM model fields.
-        raw_data — JSON-safe version for raw_extracted_data JSONField.
-                   Auto-computed from data if not supplied.
-        """
-        if raw_data is None:
-            raw_data = _make_json_safe(data)
-
+    def _save(self, validation, data: dict, raw: dict) -> ExtractedMetadata | None:
         try:
             metadata, _ = ExtractedMetadata.objects.update_or_create(
                 document_validation=validation,
@@ -213,28 +121,41 @@ class MetadataExtractor:
                     "issuing_authority_confidence": data.get("issuing_authority_confidence"),
                     "certificate_number": data.get("certificate_number", ""),
                     "verification_standard": data.get("verification_standard", ""),
-                    "raw_extracted_data": raw_data,   # always JSON-safe floats/strings
+                    "raw_extracted_data": raw,
                 },
             )
             return metadata
-        except Exception:
-            logger.exception(
-                "MetadataExtractor._save_metadata: failed | validation=%s", validation.id
+        except Exception as exc:
+            logger.error(
+                "metadata_extractor: db save failed validation=%s — %s", validation.id, exc
             )
             return None
 
-    def _create_empty_metadata(self, validation, raw_data: dict):
+    def _empty(self, validation, raw: dict) -> ExtractedMetadata | None:
         try:
             metadata, _ = ExtractedMetadata.objects.get_or_create(
                 document_validation=validation,
-                defaults={
-                    "document": validation.document,
-                    "raw_extracted_data": _make_json_safe(raw_data),
-                },
+                defaults={"document": validation.document, "raw_extracted_data": _json_safe(raw)},
             )
             return metadata
-        except Exception:
-            logger.exception(
-                "MetadataExtractor._create_empty_metadata: failed | validation=%s", validation.id
+        except Exception as exc:
+            logger.error(
+                "metadata_extractor: empty save failed validation=%s — %s", validation.id, exc
             )
             return None
+
+    def _log(self, validation, ok: bool, output, err: str | None):
+        try:
+            AIAuditLog.objects.create(
+                document_validation=validation,
+                validation_step="extraction",
+                prompt_sent=EXTRACTION_PROMPT,
+                raw_response=str(output.model_dump()) if output else (err or ""),
+                success=ok,
+                error_message=err or "",
+                model_used="gemini-2.5-flash",
+            )
+        except Exception as exc:
+            logger.error(
+                "metadata_extractor: audit log failed validation=%s — %s", validation.id, exc
+            )

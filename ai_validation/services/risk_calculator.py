@@ -74,11 +74,28 @@ class RiskCalculator:
             raise
 
         vendor.risk_level = risk_level
-        vendor.save(update_fields=['risk_level'])
+
+        all_statuses = set(
+            vendor.documents.values_list('status', flat=True)
+        )
+
+        if not all_statuses or all_statuses == {'pending'}:
+            compliance_status = 'pending'
+        elif 'expired' in all_statuses:
+            compliance_status = 'expired'
+        elif 'invalid' in all_statuses or 'flagged' in all_statuses:
+            compliance_status = 'non_compliant'
+        elif all(s in ('valid',) for s in all_statuses if s != 'pending'):
+            compliance_status = 'compliant'
+        else:
+            compliance_status = 'pending'
+
+        vendor.compliance_status = compliance_status
+        vendor.save(update_fields=['risk_level', 'compliance_status'])
 
         logger.info(
-            "calculate: vendor=%s level=%s score=%.2f emissions=%s",
-            vendor.id, risk_level, risk_score, total_emissions,
+            "calculate: vendor=%s level=%s compliance=%s score=%.2f emissions=%s",
+            vendor.id, risk_level, compliance_status, risk_score, total_emissions,
         )
         return risk_profile
 

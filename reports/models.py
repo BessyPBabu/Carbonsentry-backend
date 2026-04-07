@@ -13,6 +13,7 @@ class Report(models.Model):
         ('compliance_summary', 'Compliance Summary'),
         ('emissions_overview', 'Emissions Overview'),
         ('document_audit', 'Document Audit Report'),
+        ('vendor_compliance_report', 'Vendor Compliance Report'),
     ]
 
     STATUS_CHOICES = [

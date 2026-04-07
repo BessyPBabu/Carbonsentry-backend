@@ -10,7 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 import os
-import ssl
+import ssl as _ssl
 from pathlib import Path
 from dotenv import load_dotenv
 from datetime import timedelta
@@ -210,17 +210,71 @@ DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "CarbonSentry <no-reply@car
 
 
 REDIS_URL = os.getenv('REDIS_URL')
-
+ 
 if REDIS_URL:
-    CELERY_BROKER_URL = REDIS_URL
+    CELERY_BROKER_URL    = REDIS_URL
     CELERY_RESULT_BACKEND = REDIS_URL
-    print(f"Connected to Redis Cloud")
+    CELERY_BROKER_POOL_LIMIT = 3
+    CELERY_REDIS_MAX_CONNECTIONS = 5
+    CELERY_RESULT_BACKEND_TRANSPORT_OPTIONS = {'max_connections': 5}
+ 
+    # For rediss:// (TLS) URLs, Celery needs these dicts with the actual ssl constant
+    if REDIS_URL.startswith('rediss://'):
+        _ssl_opts = {'ssl_cert_reqs': _ssl.CERT_NONE}
+        CELERY_REDIS_BACKEND_USE_SSL = _ssl_opts
+        CELERY_BROKER_USE_SSL        = _ssl_opts
+        # kombu needs these for the actual socket connection on TLS Redis
+        CELERY_BROKER_TRANSPORT_OPTIONS = {
+            'max_connections':          5,
+            'socket_timeout':           15,
+            'socket_connect_timeout':   15,
+            'retry_on_timeout':         True,
+        }
+        CELERY_RESULT_BACKEND_TRANSPORT_OPTIONS = {
+            'max_connections':  5,
+            'socket_timeout':   15,
+            'retry_on_timeout': True,
+        }
+    # ── AFTER the final CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP line, ADD ──
+    CELERY_WORKER_PREFETCH_MULTIPLIER  = 1      # one task at a time per worker slot
+    CELERY_TASK_ACKS_LATE              = True   # re-queue if worker dies mid-task
+    CELERY_TASK_REJECT_ON_WORKER_LOST  = True   # don't silently drop tasks
+ 
+    CHANNEL_LAYERS = {
+        'default': {
+            'BACKEND': 'channels_redis.core.RedisChannelLayer',
+            'CONFIG': {
+                'hosts': [REDIS_URL],
+                'capacity': 50,
+                'expiry': 10,
+                'ssl_cert_reqs': _ssl.CERT_NONE,
+            },
+        },
+    }
+ 
+    CACHES = {
+        'default': {
+            'BACKEND': 'django_redis.cache.RedisCache',
+            'LOCATION': REDIS_URL,
+            'OPTIONS': {
+                'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+                'CONNECTION_POOL_KWARGS': {
+                    'max_connections': 5,
+                    'ssl_cert_reqs': _ssl.CERT_NONE,
+                },
+            },
+        }
+    }
+    print("Connected to Redis — Upstash")
+ 
 else:
-
-    CELERY_TASK_ALWAYS_EAGER = True
+    CELERY_TASK_ALWAYS_EAGER    = True
     CELERY_TASK_EAGER_PROPAGATES = True
+    CHANNEL_LAYERS = {'default': {'BACKEND': 'channels.layers.InMemoryChannelLayer'}}
+    CACHES = {'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}}
     print("Running in sync mode (no Redis)")
-CELERY_ACCEPT_CONTENT = ['json']
+ 
+CELERY_ACCEPT_CONTENT  = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = 'UTC'

@@ -1,21 +1,22 @@
 import logging
-from rest_framework.views import APIView
+
+from django.conf import settings
+from django.core.paginator import Paginator, EmptyPage
+from django.db.models import Q
+from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from rest_framework import status
-from django.conf import settings
-from django.db.models import Q
-from django.core.paginator import Paginator, EmptyPage
 from rest_framework.views import APIView
-from audit_logs.models import AuditLog
+
 from accounts.permissions import IsAdminOrOfficer
+from audit_logs.services import log_action
 from vendors.models import Document
-from vendors.services.upload_token_services import UploadTokenService
-from vendors.services.email_service import EmailService
 from vendors.serializers.document_serializers import (
+    DocumentDetailSerializer,
     DocumentListSerializer,
-    DocumentDetailSerializer
 )
+from vendors.services.email_service import EmailService
+from vendors.services.upload_token_services import UploadTokenService
 
 logger = logging.getLogger("vendors.document_views")
 
@@ -26,34 +27,32 @@ class DocumentListView(APIView):
     def get(self, request):
         try:
             if not hasattr(request.user, 'organization') or not request.user.organization:
-                logger.error("User has no organization")
                 return Response(
                     {"error": "User is not associated with any organization"},
-                    status=status.HTTP_403_FORBIDDEN
+                    status=status.HTTP_403_FORBIDDEN,
                 )
 
-            organization = request.user.organization
-            documents = Document.objects.filter(
-                vendor__organization=organization
-            ).select_related(
-                'vendor', 
-                'vendor__organization',
-                'document_type', 
-                'vendor__industry'
-            ).prefetch_related('validation','validation__metadata')
+            org = request.user.organization
+            documents = (
+                Document.objects
+                .filter(vendor__organization=org)
+                .select_related(
+                    'vendor', 'vendor__organization',
+                    'document_type', 'vendor__industry',
+                )
+                .prefetch_related('validation', 'validation__metadata')
+            )
 
             status_filter = request.query_params.get('status', '').strip()
             if status_filter:
                 documents = documents.filter(status=status_filter)
-                logger.debug(f"Applied status filter: {status_filter}")
 
             vendor_filter = request.query_params.get('vendor', '').strip()
             if vendor_filter:
                 try:
                     documents = documents.filter(vendor_id=vendor_filter)
-                    logger.debug(f"Applied vendor filter: {vendor_filter}")
-                except Exception as e:
-                    logger.warning(f"Invalid vendor filter: {vendor_filter}")
+                except Exception:
+                    pass
 
             search = request.query_params.get('search', '').strip()
             if search:
@@ -61,68 +60,39 @@ class DocumentListView(APIView):
                     Q(vendor__name__icontains=search) |
                     Q(document_type__name__icontains=search)
                 )
-                logger.debug(f"Applied search filter: {search}")
 
             documents = documents.order_by('-uploaded_at', '-id')
 
-            page_number = request.query_params.get('page', 1)
-            page_size = 50
-            
             try:
-                page_number = int(page_number)
-                if page_number < 1:
-                    page_number = 1
+                page_number = max(1, int(request.query_params.get('page', 1)))
             except (ValueError, TypeError):
-                logger.warning(f"Invalid page number: {page_number}")
                 page_number = 1
 
+            page_size = int(request.query_params.get('page_size', 50))
             paginator = Paginator(documents, page_size)
-            
             try:
                 page_obj = paginator.get_page(page_number)
             except EmptyPage:
-                logger.warning(f"Page {page_number} is empty")
                 page_obj = paginator.get_page(paginator.num_pages)
 
-
             serializer = DocumentListSerializer(
-            page_obj.object_list, 
-            many=True,
-            context={'request': request} 
-        )
-            
-            response_data = {
-                'count': paginator.count,
-                'total_pages': paginator.num_pages,
+                page_obj.object_list, many=True, context={'request': request}
+            )
+
+            logger.info("Documents list fetched successfully")
+            return Response({
+                'count':        paginator.count,
+                'total_pages':  paginator.num_pages,
                 'current_page': page_obj.number,
-                'page_size': page_size,
-                'results': serializer.data
-            }
+                'page_size':    page_size,
+                'results':      serializer.data,
+            })
 
-            logger.info(
-                "Documents list fetched successfully",
-                extra={
-                    "organization_id": str(organization.id),
-                    "count": paginator.count,
-                    "page": page_obj.number,
-                    "filters": {
-                        "status": status_filter,
-                        "vendor": vendor_filter,
-                        "search": search
-                    }
-                }
-            )
-
-            return Response(response_data, status=status.HTTP_200_OK)
-
-        except Exception as e:
-            logger.exception(
-                "Failed to fetch documents",
-                extra={"user_id": str(request.user.id)}
-            )
+        except Exception:
+            logger.exception("DocumentListView: failed for user=%s", request.user.id)
             return Response(
                 {"error": "Failed to fetch documents. Please try again later."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
 
@@ -131,119 +101,141 @@ class DocumentDetailView(APIView):
 
     def get(self, request, document_id):
         try:
-            # Check organization
             if not hasattr(request.user, 'organization') or not request.user.organization:
-                logger.error("User has no organization")
                 return Response(
                     {"error": "User is not associated with any organization"},
-                    status=status.HTTP_403_FORBIDDEN
+                    status=status.HTTP_403_FORBIDDEN,
                 )
 
             document = Document.objects.select_related(
-                'vendor',
-                'vendor__industry',
-                'document_type'
+                'vendor', 'vendor__industry', 'document_type'
             ).get(
                 id=document_id,
                 vendor__organization=request.user.organization,
             )
-            
-            serializer = DocumentDetailSerializer(
-            document,
-            context={'request': request} 
-        )
-            
-            logger.info(
-                "Document details fetched",
-                extra={
-                    "document_id": str(document_id),
-                    "user_id": str(request.user.id)
-                }
+
+            return Response(
+                DocumentDetailSerializer(document, context={'request': request}).data
             )
-            
-            return Response(serializer.data, status=status.HTTP_200_OK)
 
         except Document.DoesNotExist:
-            logger.warning(
-                "Document not found or access denied",
-                extra={
-                    "document_id": str(document_id),
-                    "user_id": str(request.user.id)
-                }
-            )
-            return Response(
-                {"error": "Document not found"}, 
-                status=status.HTTP_404_NOT_FOUND
-            )
-        except Exception as e:
-            logger.exception(
-                "Failed to fetch document details",
-                extra={"document_id": str(document_id)}
-            )
+            return Response({"error": "Document not found"}, status=status.HTTP_404_NOT_FOUND)
+        except Exception:
+            logger.exception("DocumentDetailView: failed document=%s", document_id)
             return Response(
                 {"error": "Failed to fetch document details"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
-        
+
 
 class DocumentResendLinkView(APIView):
+    """
+    POST /api/vendors/documents/<uuid>/resend-link/
+
+    Allowed statuses: pending, invalid, expired
+      - pending  → link never used or expired; vendor needs a fresh link
+      - invalid  → AI rejected; reset to pending so vendor can reupload
+      - expired  → cert expired; reset to pending so vendor can reupload
+
+    Frontend must show the resend button for all three statuses.
+    """
     permission_classes = [IsAuthenticated, IsAdminOrOfficer]
 
     def post(self, request, document_id):
+        # ── Fetch document ────────────────────────────────────────────────
         try:
-            doc = Document.objects.select_related('vendor').get(
+            doc = Document.objects.select_related(
+                'vendor', 'vendor__industry', 'document_type'
+            ).get(
                 id=document_id,
-                vendor__organization=request.user.organization
+                vendor__organization=request.user.organization,
             )
         except Document.DoesNotExist:
             return Response(
                 {'error': 'Document not found'},
-                status=status.HTTP_404_NOT_FOUND
+                status=status.HTTP_404_NOT_FOUND,
             )
 
-        # only allow resend for invalid or expired documents
-        if doc.status not in ('invalid', 'expired'):
+        # ── Status guard ──────────────────────────────────────────────────
+        resendable = ('pending', 'invalid', 'expired')
+        if doc.status not in resendable:
             return Response(
-                {'error': f'Cannot resend link for document with status: {doc.status}'},
-                status=status.HTTP_400_BAD_REQUEST
+                {
+                    'error': (
+                        f'Cannot resend upload link for a document '
+                        f'with status "{doc.status}". '
+                        f'Only {resendable} documents can be resent.'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-        vendor = doc.vendor
+        vendor           = doc.vendor
+        previous_status  = doc.status
 
-        # reset document so it appears in vendor upload form again
-        doc.status = 'pending'
-        doc.file   = None
-        doc.save(update_fields=['status', 'file'])
+        # ── Reset invalid/expired docs back to pending ────────────────────
+        # pending docs: keep as-is, just regenerate the token
+        if doc.status in ('invalid', 'expired'):
+            doc.status = 'pending'
+            doc.file   = None
+            doc.save(update_fields=['status', 'file'])
+            logger.info(
+                "DocumentResendLinkView: reset doc=%s from %s → pending",
+                doc.id, previous_status,
+            )
 
-        # regenerate the 72hr upload token on the vendor
-        UploadTokenService.generate_for_vendor(vendor)
-
-        
-
-        token = UploadTokenService.generate_for_vendor(vendor)
+        # ── Generate fresh 72-hr upload token ────────────────────────────
+        token       = UploadTokenService.generate_for_vendor(vendor)
         upload_link = f"{settings.FRONTEND_URL}/upload/{token}"
 
-        EmailService.send(
-            subject="CarbonSentry - New Upload Link",
-            body=f"Please upload your documents here: {upload_link}",
-            recipient=vendor.contact_email,
+        # ── Send email ────────────────────────────────────────────────────
+        try:
+            EmailService.send(
+                subject="CarbonSentry — New Document Upload Link",
+                body=(
+                    f"Dear {vendor.name} Team,\n\n"
+                    f"A new secure upload link has been generated for your compliance document submission.\n\n"
+                    f"Document: {doc.document_type.name}\n"
+                    f"Upload Link: {upload_link}\n\n"
+                    f"This link is valid for 72 hours.\n\n"
+                    f"For support: compliance@carbonsentry.com\n\n"
+                    f"Best regards,\nCarbonSentry Compliance Team"
+                ),
+                recipient=vendor.contact_email,
+            )
+            email_sent = True
+        except Exception as exc:
+            logger.error(
+                "DocumentResendLinkView: email failed vendor=%s — %s", vendor.id, exc
+            )
+            email_sent = False
+
+        # ── Audit log — uses the correct action key ───────────────────────
+        log_action(
+            action='document_reupload_requested',
+            entity_type='Document',
+            entity_id=str(doc.id),
+            organization=request.user.organization,
+            actor=request.user,
+            request=request,
+            details={
+                'document_type':   doc.document_type.name,
+                'vendor_id':       str(vendor.id),
+                'vendor_name':     vendor.name,
+                'sent_to':         vendor.contact_email,
+                'previous_status': previous_status,
+                'email_sent':      email_sent,
+            },
         )
 
-        AuditLog.objects.create(
-            actor=request.user,
-            action='document_reupload_requested',
-            entity_type='document',
-            entity_id=str(doc.id),
-            details={
-                'document_type': doc.document_type.name,
-                'vendor_id': str(vendor.id),
-                'vendor_name': vendor.name,
-                'sent_to': vendor.contact_email,
-            }
+        logger.info(
+            "DocumentResendLinkView: ok doc=%s vendor=%s previous=%s email=%s",
+            doc.id, vendor.id, previous_status, email_sent,
         )
 
         return Response({
-            'message': f'Upload link resent to {vendor.contact_email}',
-            'vendor_id': str(vendor.id),
+            'message':     f'Upload link sent to {vendor.contact_email}',
+            'vendor_id':   str(vendor.id),
             'document_id': str(doc.id),
+            'email_sent':  email_sent,
         })
