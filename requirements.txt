@@ -7,10 +7,11 @@ redis>=5,<6
 
 grpcio>=1.80,<2
 grpcio-status>=1.80,<2
-protobuf>=6.31,<7
+protobuf>=6.31.1,<7
 
-google-generativeai>=0.8,<1
-langchain-google-genai>=4,<5
+google-generativeai==0.9.0
+google-ai-generativelanguage>=0.7.0
+langchain-google-genai==4.2.1
 
 Pillow>=10.4,<12
 pdf2image==1.16.3
