@@ -1,0 +1,31 @@
+services:
+  # ── Django Web (Daphne ASGI) ─────────────────────────
+  - type: web
+    name: carbonsentry-backend
+    env: python
+    buildCommand: |
+      pip install -r requirements.txt &&
+      python manage.py collectstatic --noinput &&
+      python manage.py migrate
+    startCommand: daphne -b 0.0.0.0 -p $PORT carbonsentry.asgi:application
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: DJANGO_SETTINGS_MODULE
+        value: carbonsentry.settings
+      - fromGroup: carbonsentry-env
+
+  # ── Celery Worker ─────────────────────────────────────
+  - type: worker
+    name: carbonsentry-celery
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: celery -A carbonsentry worker --loglevel=info --concurrency=2
+    envVars:
+      - fromGroup: carbonsentry-env
+
+databases:
+  # ── PostgreSQL ────────────────────────────────────────
+  - name: carbonsentry-db
+    databaseName: carbonsentry
+    user: carbonsentry

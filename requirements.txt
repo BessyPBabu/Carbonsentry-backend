@@ -22,6 +22,7 @@ constantly==23.10.4
 cryptography==46.0.5
 daphne==4.2.1
 distro==1.9.0
+dj-database-url==3.1.2
 Django==5.2.12
 django-cors-headers==4.9.0
 django-prometheus==2.4.1
@@ -37,6 +38,7 @@ google-generativeai==0.3.2
 googleapis-common-protos==1.72.0
 grpcio==1.78.0
 grpcio-status==1.62.3
+gunicorn==25.3.0
 h11==0.16.0
 httpcore==1.0.9
 httpx==0.28.1
@@ -98,6 +100,7 @@ uuid_utils==0.14.1
 vine==5.1.0
 wcwidth==0.6.0
 websockets==16.0
+whitenoise==6.12.0
 xxhash==3.6.0
 zope.interface==8.2
 zstandard==0.25.0
