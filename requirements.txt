@@ -56,7 +56,7 @@ msgpack==1.1.2
 orjson==3.11.7
 packaging==26.0
 pdf2image==1.16.3
-Pillow==10.1.0
+Pillow==11.1.0
 pluggy==1.6.0
 prometheus_client==0.24.1
 prompt_toolkit==3.0.52
