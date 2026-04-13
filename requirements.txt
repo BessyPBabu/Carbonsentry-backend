@@ -47,7 +47,7 @@ Incremental==22.10.0
 jsonpatch==1.33
 jsonpointer==2.4
 kombu==5.3.3
-langchain-core==0.2.10
+langchain-core==0.2.38
 langchain-google-genai==1.0.10
 langsmith==0.1.77
 msgpack==1.0.8
