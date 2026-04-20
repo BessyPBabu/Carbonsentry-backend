@@ -119,14 +119,6 @@ ASGI_APPLICATION = 'carbonsentry.asgi.application'
 
 AUTH_USER_MODEL = 'accounts.User'
 
-CHANNEL_LAYERS = {
-    'default': {
-        'BACKEND': 'channels_redis.core.RedisChannelLayer',
-        'CONFIG': {
-            'hosts': [os.getenv('REDIS_URL', 'redis://localhost:6379')],
-        },
-    },
-}
 
 
 
@@ -244,40 +236,51 @@ if REDIS_URL:
     CELERY_REDIS_MAX_CONNECTIONS = 5
     CELERY_RESULT_BACKEND_TRANSPORT_OPTIONS = {'max_connections': 5}
  
-    # For rediss:// (TLS) URLs, Celery needs these dicts with the actual ssl constant
+
+
+
+if REDIS_URL:
+    CELERY_BROKER_URL     = REDIS_URL
+    CELERY_RESULT_BACKEND = REDIS_URL
+    CELERY_BROKER_POOL_LIMIT = 3
+    CELERY_REDIS_MAX_CONNECTIONS = 5
+    CELERY_RESULT_BACKEND_TRANSPORT_OPTIONS = {'max_connections': 5}
+
     if REDIS_URL.startswith('rediss://'):
         _ssl_opts = {'ssl_cert_reqs': _ssl.CERT_NONE}
         CELERY_REDIS_BACKEND_USE_SSL = _ssl_opts
         CELERY_BROKER_USE_SSL        = _ssl_opts
-        # kombu needs these for the actual socket connection on TLS Redis
         CELERY_BROKER_TRANSPORT_OPTIONS = {
-            'max_connections':          5,
-            'socket_timeout':           15,
-            'socket_connect_timeout':   15,
-            'retry_on_timeout':         True,
+            'max_connections':        5,
+            'socket_timeout':         15,
+            'socket_connect_timeout': 15,
+            'retry_on_timeout':       True,
         }
         CELERY_RESULT_BACKEND_TRANSPORT_OPTIONS = {
-            'max_connections':  5,
-            'socket_timeout':   15,
+            'max_connections': 5,
+            'socket_timeout':  15,
             'retry_on_timeout': True,
         }
-    # ── AFTER the final CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP line, ADD ──
-    CELERY_WORKER_PREFETCH_MULTIPLIER  = 1      # one task at a time per worker slot
-    CELERY_TASK_ACKS_LATE              = True   # re-queue if worker dies mid-task
-    CELERY_TASK_REJECT_ON_WORKER_LOST  = True   # don't silently drop tasks
- 
+    else:
+        CELERY_RESULT_BACKEND_TRANSPORT_OPTIONS = {'max_connections': 5}
+
+    CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+    CELERY_TASK_ACKS_LATE             = True
+    CELERY_TASK_REJECT_ON_WORKER_LOST = True
+
     CHANNEL_LAYERS = {
         'default': {
             'BACKEND': 'channels_redis.core.RedisChannelLayer',
             'CONFIG': {
-                'hosts': [REDIS_URL],
+                # Pass the URL directly — channels_redis detects rediss:// and
+                # enables TLS automatically. No host dict needed.
+                'hosts':    [REDIS_URL],
                 'capacity': 50,
-                'expiry': 10,
-                'ssl_cert_reqs': _ssl.CERT_NONE,
+                'expiry':   10,
             },
         },
     }
- 
+
     CACHES = {
         'default': {
             'BACKEND': 'django_redis.cache.RedisCache',
@@ -292,9 +295,9 @@ if REDIS_URL:
         }
     }
     print("Connected to Redis — Upstash")
- 
+
 else:
-    CELERY_TASK_ALWAYS_EAGER    = True
+    CELERY_TASK_ALWAYS_EAGER     = True
     CELERY_TASK_EAGER_PROPAGATES = True
     CHANNEL_LAYERS = {'default': {'BACKEND': 'channels.layers.InMemoryChannelLayer'}}
     CACHES = {'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}}

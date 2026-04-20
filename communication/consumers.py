@@ -17,8 +17,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
         self.vendor_sender_name = None
         self.sender_type = None
 
+        from urllib.parse import parse_qs
         query_string = self.scope.get('query_string', b'').decode()
-        params = dict(p.split('=') for p in query_string.split('&') if '=' in p)
+        params_raw = parse_qs(query_string)
+        params = {k: v[0] for k, v in params_raw.items()}
 
         jwt_token = params.get('token')
         chat_token = params.get('chat_token')

@@ -15,9 +15,7 @@ from ..constants import MIN_AUTO_APPROVE_CONFIDENCE
 
 logger = logging.getLogger(__name__)
 
-# Parallel step wall-clock budget (seconds).
-# Relevance + authenticity run concurrently inside this window.
-_PARALLEL_TIMEOUT = 12
+_PARALLEL_TIMEOUT = 30
 
 
 class ValidationOrchestrator:
@@ -53,8 +51,6 @@ class ValidationOrchestrator:
             return self._fail(validation, "preprocessing", err)
 
         # ── Parallel: relevance + authenticity ──────────────────────────────
-        # Both calls run concurrently. If relevance returns is_relevant=False
-        # with high confidence we skip extraction entirely.
         self._step(validation, "relevance")
         rel_result, auth_result = self._parallel_classify(image_b64, validation, file_path)
 
@@ -65,7 +61,7 @@ class ValidationOrchestrator:
         validation.authenticity_score = auth_result.get("score")
         validation.authenticity_indicators = auth_result.get("indicators", [])
         validation.authenticity_red_flags = auth_result.get("red_flags", [])
-        validation.readability_passed = True  # gate already ensured file is readable
+        validation.readability_passed = True
         validation.readability_score = None
         validation.readability_issues = []
 
@@ -75,7 +71,7 @@ class ValidationOrchestrator:
             "readability_passed", "readability_score", "readability_issues",
         ])
 
-        # Early exit: clearly irrelevant document → no extraction cost
+        # Early exit: clearly irrelevant — skip extraction to save time and API cost
         if not validation.is_relevant and (rel_result.get("confidence") or 0) >= 70:
             logger.info(
                 "orchestrator: early exit — irrelevant document=%s confidence=%.1f",
@@ -111,42 +107,53 @@ class ValidationOrchestrator:
         try:
             self.risk.calculate(document.vendor)
         except Exception as exc:
-            # Risk calc is non-fatal — document validation still completes
+            # risk calc failure is non-fatal — validation still completes
             logger.warning("orchestrator: risk calc failed document=%s — %s", document.id, exc)
 
         return self._complete(validation, document, metadata)
 
     # ── Helpers ──────────────────────────────────────────────────────────────
 
-    def _parallel_classify(
-        self, image_b64: str, validation, file_path: str
-    ) -> tuple[dict, dict]:
-        """Run relevance and authenticity concurrently. Returns (rel, auth) dicts."""
+    def _parallel_classify(self, image_b64: str, validation, file_path: str) -> tuple[dict, dict]:
         rel_result = None
         auth_result = None
 
+        # Use manual pool (not 'with' statement) so we can call shutdown(wait=False)
+        # on timeout. The 'with' statement's __exit__ always calls shutdown(wait=True),
+        # which blocks until threads finish and renders the timeout useless.
+        pool = ThreadPoolExecutor(max_workers=2)
         try:
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                f_rel = pool.submit(self.relevance.classify, image_b64, validation, file_path)
-                f_auth = pool.submit(self.authenticity.analyze, image_b64, validation, file_path)
+            f_rel = pool.submit(self.relevance.classify, image_b64, validation, file_path)
+            f_auth = pool.submit(self.authenticity.analyze, image_b64, validation, file_path)
 
-                for future in as_completed([f_rel, f_auth], timeout=_PARALLEL_TIMEOUT):
-                    try:
-                        _, result, _ = future.result()
-                        if future is f_rel:
-                            rel_result = result
-                        else:
-                            auth_result = result
-                    except Exception as exc:
-                        logger.warning("orchestrator: parallel step error — %s", exc)
+            for future in as_completed([f_rel, f_auth], timeout=_PARALLEL_TIMEOUT):
+                try:
+                    _, result, _ = future.result()
+                    if future is f_rel:
+                        rel_result = result
+                    else:
+                        auth_result = result
+                except Exception as exc:
+                    logger.warning("orchestrator: parallel step error — %s", exc)
 
         except FuturesTimeout:
+            # Threads that didn't finish continue in the background — they may still
+            # write audit log rows but cannot affect the validation result since we
+            # fall back to defaults below. This is acceptable.
             logger.warning(
-                "orchestrator: parallel classify timed out after %ds validation=%s",
-                _PARALLEL_TIMEOUT, validation.id,
+                "orchestrator: parallel classify timed out after %ds validation=%s "
+                "rel_done=%s auth_done=%s",
+                _PARALLEL_TIMEOUT,
+                validation.id,
+                rel_result is not None,
+                auth_result is not None,
             )
         except Exception as exc:
             logger.error("orchestrator: parallel classify unexpected error — %s", exc)
+        finally:
+            # Non-blocking — if threads are still running we let them finish in the
+            # background rather than blocking the Celery task waiting for them.
+            pool.shutdown(wait=False)
 
         return (
             rel_result or self.relevance._default(),
@@ -174,11 +181,6 @@ class ValidationOrchestrator:
         return Decimal(str(round(score, 2)))
 
     def _flag_decision(self, validation, metadata) -> tuple[bool, str]:
-        """
-        Determines if a document needs human review.
-        Covers all demo test cases: low confidence, red flags, expired docs,
-        missing critical fields, irrelevant.
-        """
         reasons = []
 
         conf = float(validation.overall_confidence or 0)
@@ -192,13 +194,11 @@ class ValidationOrchestrator:
         if validation.is_relevant is False:
             reasons.append("irrelevant_document")
 
-        # Expired document — caught here for the AI review queue demo case
         if metadata and metadata.expiry_date:
             from datetime import date
             if metadata.expiry_date < date.today():
                 reasons.append("document_expired")
 
-        # Missing CO2 value on a document that claims to be an emission report
         if (
             metadata
             and not metadata.co2_value
@@ -229,7 +229,8 @@ class ValidationOrchestrator:
             )
         except Exception as exc:
             logger.error(
-                "orchestrator: review queue insert failed validation=%s — %s", validation.id, exc
+                "orchestrator: review queue insert failed validation=%s — %s",
+                validation.id, exc,
             )
 
     def _step(self, validation, step: str):
@@ -252,10 +253,7 @@ class ValidationOrchestrator:
                 "status", "current_step", "completed_at", "total_processing_time_seconds"
             ])
 
-            if validation.requires_manual_review:
-                document.status = "flagged"
-            else:
-                document.status = "valid"
+            document.status = "flagged" if validation.requires_manual_review else "valid"
 
             if metadata and metadata.expiry_date:
                 document.expiry_date = metadata.expiry_date
@@ -275,7 +273,9 @@ class ValidationOrchestrator:
         return validation
 
     def _fail(self, validation, step: str, error: str | None) -> DocumentValidation:
-        logger.error("orchestrator: fail validation=%s step=%s error=%s", validation.id, step, error)
+        logger.error(
+            "orchestrator: fail validation=%s step=%s error=%s", validation.id, step, error
+        )
         completed_at = timezone.now()
         try:
             validation.status = "failed"
@@ -284,7 +284,9 @@ class ValidationOrchestrator:
             validation.completed_at = completed_at
             validation.requires_manual_review = True
             validation.flagged_reason = f"failed_at:{step}"
-            validation.total_processing_time_seconds = self._elapsed(validation.started_at, completed_at)
+            validation.total_processing_time_seconds = self._elapsed(
+                validation.started_at, completed_at
+            )
             validation.save()
 
             self._queue(validation, "high", f"Validation failed at {step}")
@@ -296,7 +298,9 @@ class ValidationOrchestrator:
                 logger.error("orchestrator: document status update failed — %s", exc)
 
         except Exception as exc:
-            logger.error("orchestrator: fail save itself failed validation=%s — %s", validation.id, exc)
+            logger.error(
+                "orchestrator: fail save itself failed validation=%s — %s", validation.id, exc
+            )
 
         return validation
 
