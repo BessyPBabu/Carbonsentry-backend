@@ -549,7 +549,10 @@ class PDFExporter:
                                      textColor=self._rl_color(self.MID_GRAY), alignment=TA_CENTER, spaceAfter=4)
 
         generated_str = report.generated_at.strftime("%d %b %Y, %H:%M") if report.generated_at else '—'
-        generated_by  = (report.generated_by.full_name() or report.generated_by.email) if report.generated_by else '—'
+        if report.generated_by:
+            generated_by = report.generated_by.full_name or report.generated_by.email
+        else:
+            generated_by = '—'
 
         elements = [
             Spacer(1, 30*mm),
@@ -564,14 +567,14 @@ class PDFExporter:
 
         if report.status == 'approved' and report.approved_by:
             approved_str = report.approved_at.strftime("%d %b %Y") if report.approved_at else '—'
-            approver     = report.approved_by.full_name() or report.approved_by.email
+            approver     = report.approved_by.full_name or report.approved_by.email
             ap_style     = ParagraphStyle('Ap', fontSize=10, fontName='Helvetica',
                                           textColor=self._rl_color((0.1, 0.6, 0.3)), alignment=TA_CENTER)
             elements.append(Paragraph(f"Approved by {approver} on {approved_str}", ap_style))
             elements.append(Spacer(1, 6*mm))
 
         return elements
-
+    
     def _build_body(self, report):
         builders = {
             'vendor_risk':              self._build_vendor_risk_body,

@@ -15,7 +15,7 @@ from ..constants import MIN_AUTO_APPROVE_CONFIDENCE
 
 logger = logging.getLogger(__name__)
 
-_PARALLEL_TIMEOUT = 30
+_PARALLEL_TIMEOUT = 45
 
 
 class ValidationOrchestrator:
@@ -118,9 +118,7 @@ class ValidationOrchestrator:
         rel_result = None
         auth_result = None
 
-        # Use manual pool (not 'with' statement) so we can call shutdown(wait=False)
-        # on timeout. The 'with' statement's __exit__ always calls shutdown(wait=True),
-        # which blocks until threads finish and renders the timeout useless.
+        
         pool = ThreadPoolExecutor(max_workers=2)
         try:
             f_rel = pool.submit(self.relevance.classify, image_b64, validation, file_path)
@@ -232,6 +230,15 @@ class ValidationOrchestrator:
                 "orchestrator: review queue insert failed validation=%s — %s",
                 validation.id, exc,
             )
+            return  
+
+    
+        try:
+            from ..metrics import manual_review_queue_size
+            count = ManualReviewQueue.objects.filter(status="pending").count()
+            manual_review_queue_size.set(count)
+        except Exception as exc:
+            logger.warning("orchestrator: manual_review_queue_size gauge update failed — %s", exc)
 
     def _step(self, validation, step: str):
         try:

@@ -9,11 +9,8 @@ from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
-# soft_time_limit raises SoftTimeLimitExceeded so we can clean up.
-# time_limit hard-kills the worker process after an additional 30 s.
-# Together they ensure no validation ever stays "processing" for more than ~2 min.
-_SOFT_LIMIT = 120
-_HARD_LIMIT = 150
+_SOFT_LIMIT = 180
+_HARD_LIMIT = 220
 
 
 @shared_task(
@@ -107,9 +104,15 @@ def validate_document_async(self, document_id: str):
                 v.save(update_fields=["status", "error_message", "requires_manual_review", "flagged_reason"])
         except Exception:
             pass
-        active_validations.dec()
-        validation_counter.labels(status="failed").inc()
-        validation_duration.observe(elapsed)
+        try:
+            active_validations.dec()
+        except Exception:
+            pass
+        try:
+            validation_counter.labels(status="failed").inc()
+            validation_duration.observe(elapsed)
+        except Exception:
+            pass
         return {"success": False, "error": "timeout", "document_id": str(document_id)}
 
     except Exception as exc:
@@ -127,38 +130,52 @@ def validate_document_async(self, document_id: str):
                 v.save(update_fields=["status", "error_message", "retry_count"])
         except Exception:
             pass
-        active_validations.dec()
-        validation_counter.labels(status="failed").inc()
-        validation_duration.observe(elapsed)
+        try:
+            active_validations.dec()
+        except Exception:
+            pass
+        try:
+            validation_counter.labels(status="failed").inc()
+            validation_duration.observe(elapsed)
+        except Exception:
+            pass
         raise self.retry(exc=exc, countdown=30 * (self.request.retries + 1))
 
     # ── Record metrics ───────────────────────────────────────────────────────
     elapsed = round(time.monotonic() - t0, 2)
-    active_validations.dec()
-    validation_duration.observe(elapsed)
+    try:
+        active_validations.dec()
+    except Exception:
+        pass
 
-    if validation.status == "failed":
-        validation_counter.labels(status="failed").inc()
-        logger.error(
-            "validate_document_async: failed document=%s step=%s elapsed=%.2fs",
-            document_id, validation.current_step, elapsed,
-        )
-    elif validation.requires_manual_review:
-        validation_counter.labels(status="manual_review").inc()
-        logger.info(
-            "validate_document_async: flagged document=%s confidence=%.1f elapsed=%.2fs",
-            document_id, float(validation.overall_confidence or 0), elapsed,
-        )
-    else:
-        validation_counter.labels(status="valid").inc()
-        logger.info(
-            "validate_document_async: completed document=%s confidence=%.1f elapsed=%.2fs",
-            document_id, float(validation.overall_confidence or 0), elapsed,
-        )
+    try:
+        validation_duration.observe(elapsed)
 
-    if validation.overall_confidence is not None:
-        confidence_histogram.observe(float(validation.overall_confidence))
+        if validation.status == "failed":
+            validation_counter.labels(status="failed").inc()
+            logger.error(
+                "validate_document_async: failed document=%s step=%s elapsed=%.2fs",
+                document_id, validation.current_step, elapsed,
+            )
+        elif validation.requires_manual_review:
+            validation_counter.labels(status="manual_review").inc()
+            logger.info(
+                "validate_document_async: flagged document=%s confidence=%.1f elapsed=%.2fs",
+                document_id, float(validation.overall_confidence or 0), elapsed,
+            )
+        else:
+            validation_counter.labels(status="valid").inc()
+            logger.info(
+                "validate_document_async: completed document=%s confidence=%.1f elapsed=%.2fs",
+                document_id, float(validation.overall_confidence or 0), elapsed,
+            )
 
+        if validation.overall_confidence is not None:
+            confidence_histogram.observe(float(validation.overall_confidence))
+
+    except Exception:
+        pass
+    # ── Return result ─────────────────────────────────────────────────────────
     return {
         "success": validation.status != "failed",
         "document_id": str(document_id),
