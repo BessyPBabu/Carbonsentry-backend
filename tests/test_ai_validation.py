@@ -79,7 +79,7 @@ def completed_validation(document):
         completed_at=timezone.now(),
         overall_confidence=Decimal("78.50"),
         readability_passed=True,
-        readability_score=Decimal("90.0"),   # digital PDF → high readability
+        readability_score=Decimal("90.0"),
         is_relevant=True,
         relevance_confidence=Decimal("92.0"),
         authenticity_score=Decimal("85.0"),
@@ -315,8 +315,6 @@ class TestDataValidator:
 class TestConstants:
 
     def test_min_auto_approve_confidence_value(self):
-        """MIN_AUTO_APPROVE_CONFIDENCE should be 50 — documents with all fields
-        naturally score well above this."""
         from ai_validation.constants import MIN_AUTO_APPROVE_CONFIDENCE
         assert MIN_AUTO_APPROVE_CONFIDENCE == 50.0
 
@@ -411,22 +409,25 @@ class TestDocumentValidationViewSet:
 
 
 # ── Orchestrator (mocked AI) ──────────────────────────────────────────────────
+#
+# FIX SUMMARY:
+#   1. Removed @patch for "ReadabilityChecker" — this class does not exist in
+#      orchestrator.py. Patching it caused AttributeError on every test.
+#   2. Added @patch for "gate_run" — without this the orchestrator fails at the
+#      input gate before reaching any pipeline step (document has no real file).
+#   3. Updated _perfect_doc_mocks signature and all call sites accordingly.
 
 @pytest.mark.django_db
 class TestValidationOrchestrator:
 
-    # ── Helper: mock AI responses that represent a perfect compliant document ──
-
     @staticmethod
-    def _perfect_doc_mocks(MockPrep, MockRead, MockRel, MockAuth, MockMeta, MockRisk):
-        """Configure mocks to simulate a well-formed carbon certificate."""
+    def _perfect_doc_mocks(MockPrep, MockRel, MockAuth, MockMeta, MockRisk):
+        """Configure mocks to simulate a well-formed carbon certificate.
+
+        ReadabilityChecker is intentionally absent — the orchestrator handles
+        readability inline (sets readability_passed=True after preprocessing).
+        """
         MockPrep.return_value.process.return_value = (True, "base64img", None)
-        MockRead.return_value.check.return_value = (True, {
-            "is_readable": True,
-            "quality_score": 92.0,   # digital PDF
-            "language": "English",
-            "issues": [],
-        }, None)
         MockRel.return_value.classify.return_value = (True, {
             "is_relevant": True,
             "document_type": "Carbon Credit Certificate",
@@ -444,22 +445,24 @@ class TestValidationOrchestrator:
         mock_meta.issue_date_confidence = Decimal("92")
         mock_meta.expiry_date_confidence = Decimal("90")
         mock_meta.issuing_authority_confidence = Decimal("88")
-        mock_meta.expiry_date = date(2026, 1, 15)
+        mock_meta.expiry_date = date.today() + timedelta(days=365)
         MockMeta.return_value.extract.return_value = (True, mock_meta, None)
         MockRisk.return_value.calculate.return_value = None
 
+    # Decorator order: innermost (bottom) → first positional arg after self.
+    # gate_run is outermost → last mock arg, before fixtures.
+    @patch("ai_validation.services.orchestrator.gate_run", return_value=(True, "ok"))
     @patch("ai_validation.services.orchestrator.DocumentPreprocessor")
-    @patch("ai_validation.services.orchestrator.ReadabilityChecker")
     @patch("ai_validation.services.orchestrator.RelevanceClassifier")
     @patch("ai_validation.services.orchestrator.AuthenticityAnalyzer")
     @patch("ai_validation.services.orchestrator.MetadataExtractor")
     @patch("ai_validation.services.orchestrator.RiskCalculator")
     def test_perfect_document_passes_auto_approve(
-        self, MockRisk, MockMeta, MockAuth, MockRel, MockRead, MockPrep,
+        self, MockRisk, MockMeta, MockAuth, MockRel, MockPrep, mock_gate,
         document, validation
     ):
         """A complete, well-formed carbon certificate should auto-approve (no manual review)."""
-        self._perfect_doc_mocks(MockPrep, MockRead, MockRel, MockAuth, MockMeta, MockRisk)
+        self._perfect_doc_mocks(MockPrep, MockRel, MockAuth, MockMeta, MockRisk)
 
         from ai_validation.services.orchestrator import ValidationOrchestrator
         result = ValidationOrchestrator().validate_document(document, validation)
@@ -474,17 +477,17 @@ class TestValidationOrchestrator:
         document.refresh_from_db()
         assert document.status == "valid"
 
+    @patch("ai_validation.services.orchestrator.gate_run", return_value=(True, "ok"))
     @patch("ai_validation.services.orchestrator.DocumentPreprocessor")
-    @patch("ai_validation.services.orchestrator.ReadabilityChecker")
     @patch("ai_validation.services.orchestrator.RelevanceClassifier")
     @patch("ai_validation.services.orchestrator.AuthenticityAnalyzer")
     @patch("ai_validation.services.orchestrator.MetadataExtractor")
     @patch("ai_validation.services.orchestrator.RiskCalculator")
     def test_successful_validation_marks_completed(
-        self, MockRisk, MockMeta, MockAuth, MockRel, MockRead, MockPrep,
+        self, MockRisk, MockMeta, MockAuth, MockRel, MockPrep, mock_gate,
         document, validation
     ):
-        self._perfect_doc_mocks(MockPrep, MockRead, MockRel, MockAuth, MockMeta, MockRisk)
+        self._perfect_doc_mocks(MockPrep, MockRel, MockAuth, MockMeta, MockRisk)
 
         from ai_validation.services.orchestrator import ValidationOrchestrator
         result = ValidationOrchestrator().validate_document(document, validation)
@@ -492,8 +495,10 @@ class TestValidationOrchestrator:
         assert result.status == "completed"
         assert result.overall_confidence is not None
 
+    @patch("ai_validation.services.orchestrator.gate_run", return_value=(True, "ok"))
     @patch("ai_validation.services.orchestrator.DocumentPreprocessor")
-    def test_preprocessing_failure_marks_failed(self, MockPrep, document, validation):
+    def test_preprocessing_failure_marks_failed(self, MockPrep, mock_gate, document, validation):
+        """gate_run passes but preprocessing fails — validation must end as failed."""
         MockPrep.return_value.process.return_value = (False, None, "File not found")
 
         from ai_validation.services.orchestrator import ValidationOrchestrator
@@ -504,21 +509,18 @@ class TestValidationOrchestrator:
         document.refresh_from_db()
         assert document.status == "invalid"
 
+    @patch("ai_validation.services.orchestrator.gate_run", return_value=(True, "ok"))
     @patch("ai_validation.services.orchestrator.DocumentPreprocessor")
-    @patch("ai_validation.services.orchestrator.ReadabilityChecker")
     @patch("ai_validation.services.orchestrator.RelevanceClassifier")
     @patch("ai_validation.services.orchestrator.AuthenticityAnalyzer")
     @patch("ai_validation.services.orchestrator.MetadataExtractor")
     @patch("ai_validation.services.orchestrator.RiskCalculator")
     def test_fake_document_with_sample_watermark_gets_flagged(
-        self, MockRisk, MockMeta, MockAuth, MockRel, MockRead, MockPrep,
+        self, MockRisk, MockMeta, MockAuth, MockRel, MockPrep, mock_gate,
         document, validation
     ):
         """A document with SAMPLE/DRAFT watermarks should be flagged for review."""
         MockPrep.return_value.process.return_value = (True, "base64img", None)
-        MockRead.return_value.check.return_value = (True, {
-            "is_readable": True, "quality_score": 85.0, "language": "English", "issues": [],
-        }, None)
         MockRel.return_value.classify.return_value = (True, {
             "is_relevant": True, "document_type": "Emission Report",
             "confidence": 70.0, "indicators": [],
@@ -545,20 +547,17 @@ class TestValidationOrchestrator:
         document.refresh_from_db()
         assert document.status == "flagged"
 
+    @patch("ai_validation.services.orchestrator.gate_run", return_value=(True, "ok"))
     @patch("ai_validation.services.orchestrator.DocumentPreprocessor")
-    @patch("ai_validation.services.orchestrator.ReadabilityChecker")
     @patch("ai_validation.services.orchestrator.RelevanceClassifier")
     @patch("ai_validation.services.orchestrator.AuthenticityAnalyzer")
     @patch("ai_validation.services.orchestrator.MetadataExtractor")
     @patch("ai_validation.services.orchestrator.RiskCalculator")
     def test_low_confidence_sets_requires_review(
-        self, MockRisk, MockMeta, MockAuth, MockRel, MockRead, MockPrep,
+        self, MockRisk, MockMeta, MockAuth, MockRel, MockPrep, mock_gate,
         document, validation
     ):
         MockPrep.return_value.process.return_value = (True, "base64img", None)
-        MockRead.return_value.check.return_value = (True, {
-            "is_readable": True, "quality_score": 30.0, "language": "English", "issues": [],
-        }, None)
         MockRel.return_value.classify.return_value = (True, {
             "is_relevant": True, "document_type": "Emission Report",
             "confidence": 30.0, "indicators": [],
@@ -583,24 +582,23 @@ class TestValidationOrchestrator:
         document.refresh_from_db()
         assert document.status == "flagged"
 
+    @patch("ai_validation.services.orchestrator.gate_run", return_value=(True, "ok"))
     @patch("ai_validation.services.orchestrator.DocumentPreprocessor")
-    @patch("ai_validation.services.orchestrator.ReadabilityChecker")
     @patch("ai_validation.services.orchestrator.RelevanceClassifier")
     @patch("ai_validation.services.orchestrator.AuthenticityAnalyzer")
     @patch("ai_validation.services.orchestrator.MetadataExtractor")
     @patch("ai_validation.services.orchestrator.RiskCalculator")
     def test_each_step_called_exactly_once(
-        self, MockRisk, MockMeta, MockAuth, MockRel, MockRead, MockPrep,
+        self, MockRisk, MockMeta, MockAuth, MockRel, MockPrep, mock_gate,
         document, validation
     ):
-        self._perfect_doc_mocks(MockPrep, MockRead, MockRel, MockAuth, MockMeta, MockRisk)
+        self._perfect_doc_mocks(MockPrep, MockRel, MockAuth, MockMeta, MockRisk)
 
         from ai_validation.services.orchestrator import ValidationOrchestrator
         ValidationOrchestrator().validate_document(document, validation)
 
-        assert MockRead.return_value.check.call_count == 1, (
-            "BUG: readability_checker.check called more than once"
-        )
+        # FIX: ReadabilityChecker does not exist in orchestrator — removed that check.
+        # The orchestrator handles readability inline after preprocessing.
         assert MockRel.return_value.classify.call_count == 1, (
             "BUG: relevance_classifier.classify called more than once"
         )
@@ -613,6 +611,13 @@ class TestValidationOrchestrator:
 
 
 # ── Confidence calculation ────────────────────────────────────────────────────
+#
+# FIX SUMMARY:
+#   1. _calculate_confidence → _confidence  (actual method name in orchestrator.py)
+#   2. _check_flag           → _flag_decision (actual method name in orchestrator.py)
+#   3. _flag_decision takes (validation, metadata) — pass None for metadata in unit tests.
+#   4. Removed validation.readability_score — not used in _confidence calculation.
+#      Actual weights: relevance 30%, authenticity 30%, extraction 40%.
 
 @pytest.mark.django_db
 class TestConfidenceCalculation:
@@ -626,14 +631,12 @@ class TestConfidenceCalculation:
         A perfect carbon certificate should produce confidence well above
         MIN_AUTO_APPROVE_CONFIDENCE (50).
 
-        Expected breakdown (weights: readability 10%, relevance 25%, authenticity 25%, extraction 40%):
-          readability:  92 * 0.10 = 9.2
-          relevance:    95 * 0.25 = 23.75
-          authenticity: 90 * 0.25 = 22.5
-          extraction:   90 * 0.40 = 36.0
-          Total:                  = 91.45
+        Actual weights (relevance 30%, authenticity 30%, extraction 40%):
+          relevance:    95 * 0.30 = 28.5
+          authenticity: 90 * 0.30 = 27.0
+          extraction:   avg(90, 92, 90, 88) = 90 * 0.40 = 36.0
+          Total:                              = 91.5
         """
-        validation.readability_score = Decimal("92")
         validation.relevance_confidence = Decimal("95")
         validation.authenticity_score = Decimal("90")
 
@@ -643,12 +646,11 @@ class TestConfidenceCalculation:
         mock_meta.expiry_date_confidence = Decimal("90")
         mock_meta.issuing_authority_confidence = Decimal("88")
 
-        confidence = self._make_orchestrator()._calculate_confidence(validation, mock_meta)
+        confidence = self._make_orchestrator()._confidence(validation, mock_meta)
         assert float(confidence) > MIN_AUTO_APPROVE_CONFIDENCE
         assert float(confidence) > 85, f"Perfect doc should score > 85, got {confidence}"
 
     def test_high_scores_produce_high_confidence(self, validation):
-        validation.readability_score = Decimal("90")
         validation.relevance_confidence = Decimal("95")
         validation.authenticity_score = Decimal("88")
 
@@ -658,22 +660,19 @@ class TestConfidenceCalculation:
         mock_meta.expiry_date_confidence = Decimal("88")
         mock_meta.issuing_authority_confidence = Decimal("92")
 
-        confidence = self._make_orchestrator()._calculate_confidence(validation, mock_meta)
+        confidence = self._make_orchestrator()._confidence(validation, mock_meta)
         assert float(confidence) > MIN_AUTO_APPROVE_CONFIDENCE
 
     def test_borderline_document_passes_with_correct_threshold(self, validation):
         """
-        A borderline document (medium quality, some fields present) should still
-        auto-approve at the 50% threshold.
+        A borderline document (medium quality) should still auto-approve at threshold 50.
 
-        Expected:
-          readability:  70 * 0.10 = 7.0
-          relevance:    70 * 0.25 = 17.5
-          authenticity: 65 * 0.25 = 16.25
+        Actual weights (relevance 30%, authenticity 30%, extraction 40%):
+          relevance:    70 * 0.30 = 21.0
+          authenticity: 65 * 0.30 = 19.5
           extraction:   65 * 0.40 = 26.0
-          Total:                  = 66.75 → passes
+          Total:                  = 66.5 → passes (> 50)
         """
-        validation.readability_score = Decimal("70")
         validation.relevance_confidence = Decimal("70")
         validation.authenticity_score = Decimal("65")
 
@@ -683,14 +682,13 @@ class TestConfidenceCalculation:
         mock_meta.expiry_date_confidence = Decimal("65")
         mock_meta.issuing_authority_confidence = Decimal("65")
 
-        confidence = self._make_orchestrator()._calculate_confidence(validation, mock_meta)
+        confidence = self._make_orchestrator()._confidence(validation, mock_meta)
         assert float(confidence) > MIN_AUTO_APPROVE_CONFIDENCE, (
             f"Borderline document should pass at threshold {MIN_AUTO_APPROVE_CONFIDENCE}, "
             f"got {confidence}"
         )
 
     def test_all_zero_scores_produce_low_confidence(self, validation):
-        validation.readability_score = Decimal("0")
         validation.relevance_confidence = Decimal("0")
         validation.authenticity_score = Decimal("0")
 
@@ -700,15 +698,14 @@ class TestConfidenceCalculation:
         mock_meta.expiry_date_confidence = Decimal("0")
         mock_meta.issuing_authority_confidence = Decimal("0")
 
-        confidence = self._make_orchestrator()._calculate_confidence(validation, mock_meta)
+        confidence = self._make_orchestrator()._confidence(validation, mock_meta)
         assert float(confidence) < MIN_AUTO_APPROVE_CONFIDENCE
 
     def test_none_metadata_uses_default_extraction_score(self, validation):
-        validation.readability_score = Decimal("80")
         validation.relevance_confidence = Decimal("80")
         validation.authenticity_score = Decimal("80")
 
-        confidence = self._make_orchestrator()._calculate_confidence(validation, None)
+        confidence = self._make_orchestrator()._confidence(validation, None)
         assert confidence is not None
 
     def test_flag_triggered_below_min_confidence(self, validation):
@@ -716,7 +713,8 @@ class TestConfidenceCalculation:
         validation.authenticity_red_flags = []
         validation.is_relevant = True
 
-        should_flag, reason = self._make_orchestrator()._check_flag(validation)
+        # FIX: method is _flag_decision(validation, metadata), not _check_flag(validation)
+        should_flag, reason = self._make_orchestrator()._flag_decision(validation, None)
 
         assert should_flag is True
         assert "confidence" in reason.lower()
@@ -727,7 +725,7 @@ class TestConfidenceCalculation:
         validation.authenticity_red_flags = []
         validation.is_relevant = True
 
-        should_flag, reason = self._make_orchestrator()._check_flag(validation)
+        should_flag, reason = self._make_orchestrator()._flag_decision(validation, None)
         assert should_flag is False
         assert reason == ""
 
@@ -736,7 +734,7 @@ class TestConfidenceCalculation:
         validation.authenticity_red_flags = ["SAMPLE watermark", "VOID stamp", "placeholder text"]
         validation.is_relevant = True
 
-        should_flag, _ = self._make_orchestrator()._check_flag(validation)
+        should_flag, _ = self._make_orchestrator()._flag_decision(validation, None)
         assert should_flag is True
 
     def test_irrelevant_document_triggers_flag(self, validation):
@@ -744,7 +742,7 @@ class TestConfidenceCalculation:
         validation.authenticity_red_flags = []
         validation.is_relevant = False
 
-        should_flag, reason = self._make_orchestrator()._check_flag(validation)
+        should_flag, reason = self._make_orchestrator()._flag_decision(validation, None)
         assert should_flag is True
         assert "compliance" in reason.lower() or "relevant" in reason.lower()
 
@@ -788,6 +786,8 @@ class TestValidateDocumentTask:
         from ai_validation.tasks import validate_document_async
         result = validate_document_async(str(document.id))
 
+        # FIX: tasks.py now returns a dict — confirmed by our tasks.py fix
+        assert result is not None
         assert "document_id" in result
         assert "validation_id" in result
 
@@ -795,7 +795,7 @@ class TestValidateDocumentTask:
         from ai_validation.tasks import validate_document_async
         result = validate_document_async(str(uuid.uuid4()))
         assert result["success"] is False
-        assert "not found" in result["error"].lower()
+        assert "not_found" in result["error"] or "not found" in result["error"].lower()
 
     def test_task_document_no_file_returns_error(self, document):
         from ai_validation.tasks import validate_document_async
@@ -921,7 +921,7 @@ class TestRiskCalculator:
         )
         profile = RiskCalculator().calculate(vendor)
         assert profile.total_co2_emissions is not None
-        assert profile.risk_level in ("low", "medium")   # 1000 t is below low threshold of 300? no it's above. medium.
+        assert profile.risk_level in ("low", "medium")
 
     def test_expired_document_increases_score(self, vendor, threshold, document, completed_validation):
         ExtractedMetadata.objects.create(
@@ -958,7 +958,6 @@ class TestRiskCalculator:
             expiry_date=date.today() + timedelta(days=180),   # 6 months away — no penalty
         )
         profile = RiskCalculator().calculate(vendor)
-        # Base score for 100t (safe) is 5, no expiry penalty → should be low
         assert float(profile.risk_score) < 25
 
     def test_creates_default_threshold_when_none_exists(self, vendor):

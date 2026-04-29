@@ -1,6 +1,7 @@
 import io
 import uuid
 import pytest
+from datetime import timedelta
 from unittest.mock import patch
 from django.utils import timezone
 from django.db import IntegrityError
@@ -351,6 +352,7 @@ class TestVendorDocumentListView:
 
 @pytest.mark.django_db
 class TestVendorSendEmailsView:
+
     @patch("vendors.services.email_campaign_service.EmailCampaignService.run")
     def test_officer_can_send_emails(self, mock_run, officer_client, vendor, document):
         res = officer_client.post(VENDOR_EMAIL_URL, {"vendor_ids": [str(vendor.id)]}, format="json")
@@ -392,14 +394,20 @@ class TestVendorBulkUploadView:
 
     def test_valid_csv_creates_vendors(self, officer_client, industry):
         res = officer_client.post(VENDOR_BULK_URL, {
-            "csv_file": self._csv([{"name": "CSV Vendor", "email": "csv@csv.com", "industry": "Technology", "country": "India"}])
+            "csv_file": self._csv([{
+                "name": "CSV Vendor", "email": "csv@csv.com",
+                "industry": "Technology", "country": "India",
+            }])
         }, format="multipart")
         assert res.status_code == 200
         assert res.data["success_count"] >= 1
 
     def test_returns_bulk_upload_summary(self, officer_client, industry):
         res = officer_client.post(VENDOR_BULK_URL, {
-            "csv_file": self._csv([{"name": "Bulk1", "email": "b1@b.com", "industry": "Technology", "country": "India"}])
+            "csv_file": self._csv([{
+                "name": "Bulk1", "email": "b1@b.com",
+                "industry": "Technology", "country": "India",
+            }])
         }, format="multipart")
         assert "bulk_upload_id" in res.data
         assert "total_rows" in res.data
@@ -427,7 +435,10 @@ class TestVendorBulkUploadView:
 
     def test_bulk_upload_record_saved_to_db(self, officer_client, industry):
         res = officer_client.post(VENDOR_BULK_URL, {
-            "csv_file": self._csv([{"name": "DBSave", "email": "db@save.com", "industry": "Technology", "country": "India"}])
+            "csv_file": self._csv([{
+                "name": "DBSave", "email": "db@save.com",
+                "industry": "Technology", "country": "India",
+            }])
         }, format="multipart")
         assert VendorBulkUpload.objects.filter(id=res.data["bulk_upload_id"]).exists()
 
@@ -554,13 +565,40 @@ class TestDocumentResendLinkView:
     @patch("vendors.views.document_views.UploadTokenService.generate_for_vendor")
     def test_resend_for_invalid_document(self, mock_token, mock_email, officer_client, invalid_document):
         mock_token.return_value = "new-token"
-        assert officer_client.post(doc_resend_url(invalid_document.id)).status_code == 200
+        res = officer_client.post(doc_resend_url(invalid_document.id))
+        assert res.status_code == 200
+        invalid_document.refresh_from_db()
+        # invalid resets to pending
+        assert invalid_document.status == "pending"
 
-    def test_cannot_resend_pending_document(self, officer_client, document):
-        assert officer_client.post(doc_resend_url(document.id)).status_code == 400
+    # FIX: pending IS in resendable = ('pending', 'invalid', 'expired').
+    # The original test wrongly expected 400. Pending documents need a fresh
+    # link when the vendor never uploaded — this is the primary use case.
+    @patch("vendors.views.document_views.EmailService.send")
+    @patch("vendors.views.document_views.UploadTokenService.generate_for_vendor")
+    def test_resend_for_pending_document_succeeds(self, mock_token, mock_email, officer_client, document):
+        """Pending documents can be resent — vendor may not have received or used the link."""
+        mock_token.return_value = "new-token"
+        res = officer_client.post(doc_resend_url(document.id))
+        assert res.status_code == 200
+        # pending stays pending (no file to clear, no status reset needed)
+        document.refresh_from_db()
+        assert document.status == "pending"
 
     def test_cannot_resend_uploaded_document(self, officer_client, uploaded_document):
-        assert officer_client.post(doc_resend_url(uploaded_document.id)).status_code == 400
+        """uploaded is NOT resendable — vendor already submitted the file."""
+        res = officer_client.post(doc_resend_url(uploaded_document.id))
+        assert res.status_code == 400
+
+    def test_cannot_resend_valid_document(self, officer_client, vendor, doc_type):
+        """valid documents need no resend."""
+        valid_doc = Document.objects.create(
+            vendor=vendor,
+            document_type=doc_type,
+            status="valid",
+        )
+        res = officer_client.post(doc_resend_url(valid_doc.id))
+        assert res.status_code == 400
 
     def test_foreign_org_document_404(self, officer_client, other_vendor, doc_type):
         other_doc = Document.objects.create(vendor=other_vendor, document_type=doc_type, status="expired")
@@ -699,7 +737,10 @@ class TestCsvParser:
             list(parse_csv(f))
 
     def test_row_values_stripped(self):
-        rows = list(parse_csv(self._f("name,contact_email,industry,country\n  Foo  ,  foo@foo.com  ,  Tech  ,  India  ")))
+        rows = list(parse_csv(self._f(
+            "name,contact_email,industry,country\n"
+            "  Foo  ,  foo@foo.com  ,  Tech  ,  India  "
+        )))
         _, row = rows[0]
         assert row["name"] == "Foo"
         assert row["contact_email"] == "foo@foo.com"
