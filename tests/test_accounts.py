@@ -2,6 +2,7 @@ import uuid
 import pytest
 from unittest.mock import patch, MagicMock
 from django.core import mail
+from django.core.cache import cache
 from django.utils import timezone
 from django.db import IntegrityError
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
@@ -40,6 +41,13 @@ CHANGE_URL = "/api/accounts/auth/password/change/"
 REGISTER_URL = "/api/accounts/organizations/register/"
 VERIFY_BASE  = "/api/accounts/organizations/verify-email/"
 ORG_ME_URL   = "/api/accounts/organizations/me/"
+
+
+@pytest.fixture(autouse=True)
+def clear_throttle_cache():
+    cache.clear()
+    yield
+    cache.clear()
 
 
 # ── Organization model ────────────────────────────────────────────────────────
@@ -161,7 +169,6 @@ class TestLoginView:
         res = anon_client.post(LOGIN_URL, {"email": "inactive@testcorp.com", "password": "Inactive@1234"})
         assert res.status_code == 401
 
-    # BUG FIX confirmed: unverified org returns 403 with correct error key
     def test_unverified_org_403(self, anon_client, unverified_org):
         User.objects.create_user(
             email="admin@unverified.com", password="Admin@1234",
@@ -186,6 +193,24 @@ class TestLoginView:
     def test_empty_payload_400(self, anon_client):
         res = anon_client.post(LOGIN_URL, {})
         assert res.status_code == 400
+
+
+@pytest.mark.django_db
+class TestLoginThrottle:
+
+    def test_blocks_after_rate_exceeded(self, anon_client):
+        for _ in range(5):
+            res = anon_client.post(LOGIN_URL, {"email": "ghost@corp.com", "password": "wrong"})
+            assert res.status_code == 401
+        res = anon_client.post(LOGIN_URL, {"email": "ghost@corp.com", "password": "wrong"})
+        assert res.status_code == 429
+
+    def test_successful_login_still_counts_toward_limit(self, anon_client, admin_user):
+        for _ in range(5):
+            res = anon_client.post(LOGIN_URL, {"email": "admin@testcorp.com", "password": "Admin@1234"})
+            assert res.status_code == 200
+        res = anon_client.post(LOGIN_URL, {"email": "admin@testcorp.com", "password": "Admin@1234"})
+        assert res.status_code == 429
 
 
 # ── Logout ────────────────────────────────────────────────────────────────────
@@ -226,7 +251,7 @@ class TestForgotPasswordView:
     def test_returns_200_for_nonexistent_email_no_leak(self, anon_client):
         res = anon_client.post(FORGOT_URL, {"email": "ghost@corp.com"})
         assert res.status_code == 200
-        assert len(mail.outbox) == 0  # no email sent, no info leaked
+        assert len(mail.outbox) == 0
 
     def test_reset_link_in_email_body(self, anon_client, admin_user):
         anon_client.post(FORGOT_URL, {"email": "admin@testcorp.com"})
@@ -239,6 +264,26 @@ class TestForgotPasswordView:
     def test_inactive_user_gets_no_email(self, anon_client, inactive_user):
         anon_client.post(FORGOT_URL, {"email": "inactive@testcorp.com"})
         assert len(mail.outbox) == 0
+
+
+@pytest.mark.django_db
+class TestPasswordResetThrottle:
+
+    def test_forgot_password_blocks_after_rate_exceeded(self, anon_client):
+        for _ in range(5):
+            res = anon_client.post(FORGOT_URL, {"email": "ghost@corp.com"})
+            assert res.status_code == 200
+        res = anon_client.post(FORGOT_URL, {"email": "ghost@corp.com"})
+        assert res.status_code == 429
+
+    def test_reset_password_blocks_after_rate_exceeded(self, anon_client, inactive_user):
+        token = PasswordResetTokenGenerator().make_token(inactive_user)
+        uid = urlsafe_base64_encode(force_bytes(inactive_user.id))
+        for _ in range(5):
+            res = anon_client.post(RESET_URL, {"uid": uid, "token": "tampered", "password": "NewSecure@99"})
+            assert res.status_code == 400
+        res = anon_client.post(RESET_URL, {"uid": uid, "token": "tampered", "password": "NewSecure@99"})
+        assert res.status_code == 429
 
 
 # ── Reset password ────────────────────────────────────────────────────────────
@@ -367,6 +412,23 @@ class TestOrganizationRegisterView:
         assert "next_step" in res.data
 
 
+@pytest.mark.django_db
+class TestRegisterThrottle:
+
+    def test_blocks_after_rate_exceeded(self, anon_client):
+        for i in range(10):
+            res = anon_client.post(REGISTER_URL, {
+                "name": f"Org {i}", "industry": "Finance", "country": "India",
+                "admin_email": f"admin{i}@org{i}.com", "password": "Secure@9876",
+            })
+            assert res.status_code == 201
+        res = anon_client.post(REGISTER_URL, {
+            "name": "Org Overflow", "industry": "Finance", "country": "India",
+            "admin_email": "overflow@org.com", "password": "Secure@9876",
+        })
+        assert res.status_code == 429
+
+
 # ── Email verification ────────────────────────────────────────────────────────
 
 @pytest.mark.django_db
@@ -421,7 +483,6 @@ class TestOrganizationMeView:
         org = Organization.objects.get(name="Test Corp")
         assert org.primary_email != "hacked@hacker.com"
 
-    
     def test_officer_can_get_org_after_fix(self, officer_client):
         res = officer_client.get(ORG_ME_URL)
         assert res.status_code in (200, 403)
@@ -578,6 +639,12 @@ class TestEditUserView:
         admin_client.patch(user_detail_url(officer_user.id), {"role": "viewer"})
         officer_user.refresh_from_db()
         assert officer_user.role == "viewer"
+
+    def test_admin_cannot_promote_user_to_admin(self, admin_client, officer_user):
+        res = admin_client.patch(user_detail_url(officer_user.id), {"role": "admin"})
+        assert res.status_code == 400
+        officer_user.refresh_from_db()
+        assert officer_user.role == "officer"
 
     def test_admin_deactivate_user(self, admin_client, officer_user):
         admin_client.patch(user_detail_url(officer_user.id), {"is_active": False})
@@ -755,17 +822,16 @@ class TestEnforcePasswordChangePermission:
         r = _req(u, path="/api/vendors/")
         assert EnforcePasswordChange().has_permission(r, None) is False
 
-    # BUG FIX: these paths must match the actual URL config prefix
     def test_must_change_allowed_on_password_change_path(self):
         u = _active("officer", must_change=True)
         r = _req(u)
-        r.path = "/api/accounts/auth/password/change/"  # correct prefixed path
+        r.path = "/api/accounts/auth/password/change/"
         assert EnforcePasswordChange().has_permission(r, None) is True
 
     def test_must_change_allowed_on_logout_path(self):
         u = _active("officer", must_change=True)
         r = _req(u)
-        r.path = "/api/accounts/auth/logout/"  # correct prefixed path
+        r.path = "/api/accounts/auth/logout/"
         assert EnforcePasswordChange().has_permission(r, None) is True
 
     def test_unauthenticated_passes_through(self):
@@ -799,16 +865,13 @@ class TestRoleEndpointGates:
         assert admin_client.get(ORG_ME_URL).status_code == 200
 
     def test_anon_blocked_from_register(self):
-        # Register is AllowAny — but let's confirm no auth crash
         client = APIRequestFactory()
-        # just verifying route exists, not content
-
 
 
 class TestPasswordValidator:
 
     def test_valid_passes(self):
-        validate_strong_password("Secure@99")  # no raise
+        validate_strong_password("Secure@99")
 
     def test_too_short(self):
         with pytest.raises(ValidationError): validate_strong_password("Ab@1")
@@ -827,6 +890,15 @@ class TestPasswordValidator:
 
     def test_empty(self):
         with pytest.raises(ValidationError): validate_strong_password("")
+
+    def test_too_long_rejected(self):
+        with pytest.raises(ValidationError):
+            validate_strong_password("Aa1@" * 40)
+
+    def test_exactly_128_chars_passes(self):
+        password = "Aa1@" + "x" * 123
+        assert len(password) == 127
+        validate_strong_password(password + "y")
 
 
 class TestFieldValidators:
@@ -918,6 +990,24 @@ class TestAddUserSerializer:
         )
         s.is_valid()
         assert s.validated_data["email"] == "upper@corp.com"
+
+
+@pytest.mark.django_db
+class TestEditUserSerializer:
+
+    def test_valid_role_change_to_viewer(self, officer_user):
+        s = EditUserSerializer(officer_user, data={"role": "viewer"}, partial=True)
+        assert s.is_valid(), s.errors
+
+    def test_admin_role_rejected(self, officer_user):
+        s = EditUserSerializer(officer_user, data={"role": "admin"}, partial=True)
+        assert not s.is_valid()
+        assert "role" in s.errors
+
+    def test_unknown_role_rejected(self, officer_user):
+        s = EditUserSerializer(officer_user, data={"role": "superuser"}, partial=True)
+        assert not s.is_valid()
+        assert "role" in s.errors
 
 
 @pytest.mark.django_db
@@ -1026,7 +1116,7 @@ class TestGenerateTempPassword:
 
     def test_passes_strong_validator(self):
         for _ in range(20):
-            validate_strong_password(generate_temp_password())  # must not raise
+            validate_strong_password(generate_temp_password())
 
     def test_default_length_12(self):
         assert len(generate_temp_password()) == 12

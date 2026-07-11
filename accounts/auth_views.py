@@ -22,11 +22,14 @@ from .serializers import (
     ForceChangePasswordSerializer,
 )
 
+from .throttling import LoginRateThrottle, PasswordResetRateThrottle
+
 logger = logging.getLogger("accounts.auth")
 
 
 class LoginView(TokenObtainPairView):
     permission_classes = [AllowAny]
+    throttle_classes   = [LoginRateThrottle]
     serializer_class   = EmailTokenObtainPairSerializer
 
     def post(self, request, *args, **kwargs):
@@ -109,6 +112,7 @@ class LogoutView(APIView):
 
 class ForgotPasswordView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes   = [PasswordResetRateThrottle]
 
     def post(self, request):
         serializer = ForgotPasswordSerializer(data=request.data)
@@ -143,6 +147,7 @@ class ForgotPasswordView(APIView):
 
 class ResetPasswordView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes   = [PasswordResetRateThrottle]
 
     def post(self, request):
         serializer = ResetPasswordSerializer(data=request.data)

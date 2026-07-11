@@ -14,6 +14,7 @@ from .serializers import (
     EditUserSerializer,
 )
 from .permissions import IsAdmin
+from .throttling import RegisterRateThrottle
 from .utils.passwords import generate_temp_password
 from .utils.email_verification import (
     hash_token,
@@ -26,6 +27,7 @@ logger = logging.getLogger("accounts.views")
 
 class OrganizationRegisterView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes   = [RegisterRateThrottle]
 
     def post(self, request):
         serializer = OrganizationRegisterSerializer(data=request.data)

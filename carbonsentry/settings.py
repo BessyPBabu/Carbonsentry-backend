@@ -195,6 +195,11 @@ REST_FRAMEWORK = {
     ),
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 10,
+    'DEFAULT_THROTTLE_RATES': {
+        'login': '5/min',
+        'password_reset': '5/min',
+        'register': '10/hour',
+    },
 }
 
 SIMPLE_JWT = {

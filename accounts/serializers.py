@@ -210,8 +210,10 @@ class EditUserSerializer(serializers.ModelSerializer):
         return validate_full_name(value)
 
     def validate_role(self, value):
-        if value not in User.Role.values:
-            raise serializers.ValidationError("Invalid role")
+        if value not in [User.Role.OFFICER, User.Role.VIEWER]:
+            raise serializers.ValidationError(
+                "Only 'officer' or 'viewer' roles can be assigned here"
+            )
         return value
 
     def update(self, instance, validated_data):
@@ -277,9 +279,14 @@ class ResetPasswordSerializer(serializers.Serializer):
         try:
             user_id   = force_str(urlsafe_base64_decode(data["uid"]))
             self.user = User.objects.get(id=user_id)
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "password_reset.invalid_link | uid=%s error=%s",
+                str(data.get("uid", ""))[:20], str(exc),
+            )
             raise serializers.ValidationError("Invalid reset link")
         if not PasswordResetTokenGenerator().check_token(self.user, data["token"]):
+            logger.warning("password_reset.invalid_token | user_id=%s", self.user.id)
             raise serializers.ValidationError("Invalid or expired token")
         return data
 

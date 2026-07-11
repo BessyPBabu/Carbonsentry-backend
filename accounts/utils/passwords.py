@@ -12,6 +12,11 @@ def validate_strong_password(password: str) -> None:
             "Password must be at least 8 characters long"
         )
 
+    if len(password) > 128:
+        raise serializers.ValidationError(
+            "Password cannot exceed 128 characters"
+        )
+
     if not any(c.islower() for c in password):
         raise serializers.ValidationError(
             "Password must contain at least one lowercase letter"
