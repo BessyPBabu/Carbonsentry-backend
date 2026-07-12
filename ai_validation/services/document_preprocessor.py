@@ -1,3 +1,4 @@
+# NEW
 import base64
 import io
 import logging
@@ -12,14 +13,26 @@ logger = logging.getLogger(__name__)
 MAX_SIZE_BYTES = 4 * 1024 * 1024
 MAX_DIM = 1024
 
+_poppler_checked = False
+
+
+def _check_poppler_once():
+    global _poppler_checked
+    if _poppler_checked:
+        return
+    _poppler_checked = True
+    try:
+        subprocess.run(["pdftoppm", "-v"], capture_output=True, check=False, timeout=5)
+    except FileNotFoundError:
+        logger.warning("document_preprocessor: poppler not found — PDF processing will fail")
+    except subprocess.TimeoutExpired:
+        logger.warning("document_preprocessor: poppler version check timed out")
+
 
 class DocumentPreprocessor:
 
     def __init__(self):
-        try:
-            subprocess.run(["pdftoppm", "-v"], capture_output=True, check=False)
-        except FileNotFoundError:
-            logger.warning("document_preprocessor: poppler not found — PDF processing will fail")
+        _check_poppler_once()
 
     def process(self, file_path: str) -> tuple[bool, str | None, str | None]:
         if not os.path.exists(file_path):

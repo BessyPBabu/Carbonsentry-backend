@@ -21,12 +21,8 @@ CALL_TIMEOUT_RELEVANCE    = 20
 CALL_TIMEOUT_AUTHENTICITY = 20
 CALL_TIMEOUT_EXTRACTION   = 30
 
-# Maximum time we'll sleep between retries.
-# Keeping this well below the Celery soft limit (120 s) so that even if both
-# models are rate-limited across all three pipeline steps, the total sleep
-# budget stays manageable (~6 retries × 15 s = 90 s worst case, leaving room
-# for actual API call time).
-_MAX_RETRY_SLEEP = 15
+
+_MAX_RETRY_SLEEP = 10
 
 _RETRY_DELAY_RE = re.compile(r"retry(?:Delay)?['\"]?\s*[:\s]+['\"]?(\d+(?:\.\d+)?)\s*s", re.I)
 _DAILY_QUOTA_IDS = {
@@ -108,13 +104,17 @@ class LangChainClient:
                     _PRIMARY_MODEL,
                 )
                 self._primary_daily_exhausted = True
-            # on any other error fall through to the fallback model
+            else:
+                logger.warning(
+                    "langchain_client: primary model failed, falling back | step=%s error=%s",
+                    step, (err or "")[:200],
+                )
 
         ok, result, err = self._try_model(
             self._fallback, _FALLBACK_MODEL, message, schema, step, timeout_seconds
         )
         return (True, result, None) if ok else (False, None, err)
-
+    
     def _try_model(
         self,
         llm: ChatGoogleGenerativeAI,

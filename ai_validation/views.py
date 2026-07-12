@@ -9,7 +9,7 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-
+from accounts.permissions import IsAdminOrOfficer
 from .models import DocumentValidation, VendorRiskProfile, ManualReviewQueue, AIAuditLog
 from .serializers import (
     DocumentValidationSerializer,
@@ -25,6 +25,11 @@ logger = logging.getLogger(__name__)
 class DocumentValidationViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = DocumentValidationSerializer
     permission_classes = [IsAuthenticated]
+
+    def get_permissions(self):
+        if self.action == "trigger_validation":
+            return [IsAuthenticated(), IsAdminOrOfficer()]
+        return [IsAuthenticated()]
 
     def get_queryset(self):
         try:
@@ -128,6 +133,11 @@ class VendorRiskProfileViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = VendorRiskProfileSerializer
     permission_classes = [IsAuthenticated]
 
+    def get_permissions(self):
+        if self.action == "recalculate":
+            return [IsAuthenticated(), IsAdminOrOfficer()]
+        return [IsAuthenticated()]
+
     def get_queryset(self):
         try:
             if not hasattr(self.request.user, "organization"):
@@ -189,6 +199,11 @@ class VendorRiskProfileViewSet(viewsets.ReadOnlyModelViewSet):
 class ManualReviewQueueViewSet(viewsets.ModelViewSet):
     serializer_class = ManualReviewQueueSerializer
     permission_classes = [IsAuthenticated]
+
+    def get_permissions(self):
+        if self.action in ("assign", "resolve", "create", "update", "partial_update", "destroy"):
+            return [IsAuthenticated(), IsAdminOrOfficer()]
+        return [IsAuthenticated()]
 
     def get_queryset(self):
         try:

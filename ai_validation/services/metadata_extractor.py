@@ -84,7 +84,11 @@ class MetadataExtractor:
 
         ok, val = self.validator.validate_co2_value(output.co2_value)
         cleaned["co2_value"] = Decimal(str(val)) if ok and val is not None else None
-        cleaned["co2_confidence"] = Decimal(str(min(100, max(0, output.co2_confidence)))) if ok and val else Decimal("0")
+        cleaned["co2_confidence"] = (
+            Decimal(str(min(100, max(0, output.co2_confidence))))
+            if ok and val is not None
+            else Decimal("0")
+        )
         cleaned["co2_unit"] = self.validator.normalize_unit(output.co2_unit)
 
         ok, val = self.validator.validate_date(output.issue_date, is_expiry=False)

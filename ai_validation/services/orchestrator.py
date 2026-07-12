@@ -158,10 +158,19 @@ class ValidationOrchestrator:
             auth_result or self.authenticity._default(),
         )
 
+    # NEW
     def _confidence(self, validation, metadata) -> Decimal:
         score = 0.0
-        score += float(validation.relevance_confidence or 60) * 0.30
-        score += float(validation.authenticity_score or 60) * 0.30
+        relevance = (
+            float(validation.relevance_confidence)
+            if validation.relevance_confidence is not None else 60.0
+        )
+        authenticity = (
+            float(validation.authenticity_score)
+            if validation.authenticity_score is not None else 60.0
+        )
+        score += relevance * 0.30
+        score += authenticity * 0.30
 
         if metadata:
             fields = [
@@ -199,7 +208,7 @@ class ValidationOrchestrator:
 
         if (
             metadata
-            and not metadata.co2_value
+            and metadata.co2_value is None
             and validation.detected_document_type in ("Emission Report", "GHG Inventory Report")
         ):
             reasons.append("missing_co2_value")

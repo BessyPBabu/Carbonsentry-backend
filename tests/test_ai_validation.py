@@ -118,7 +118,7 @@ def metadata(completed_validation, document):
         co2_extraction_confidence=Decimal("90.0"),
         issue_date=date(2024, 1, 15),
         issue_date_confidence=Decimal("92.0"),
-        expiry_date=date.today() + timedelta(days=365),  # future expiry — valid
+        expiry_date=date.today() + timedelta(days=365),
         expiry_date_confidence=Decimal("90.0"),
         issuing_authority="Bureau Veritas",
         issuing_authority_confidence=Decimal("88.0"),
@@ -207,7 +207,6 @@ class TestExtractedMetadataModel:
         assert metadata.certificate_number == "BV-2024-001"
 
     def test_future_expiry_date_stored_correctly(self, metadata):
-        """Expiry dates in the future must be stored as-is — they are valid."""
         assert metadata.expiry_date > date.today()
 
     def test_one_to_one_with_validation(self, completed_validation, document, metadata):
@@ -243,14 +242,12 @@ class TestDataValidator:
         assert ok is False
 
     def test_expiry_date_in_future_accepted(self):
-        """Expiry dates in the future are valid — is_expiry=True must allow them."""
         future = (date.today() + timedelta(days=365)).strftime("%Y-%m-%d")
         ok, result = DataValidator.validate_date(future, is_expiry=True)
         assert ok is True
         assert result > date.today()
 
     def test_expiry_date_two_years_ahead_accepted(self):
-        """Multi-year certificate validity windows are normal."""
         future = (date.today() + timedelta(days=730)).strftime("%Y-%m-%d")
         ok, result = DataValidator.validate_date(future, is_expiry=True)
         assert ok is True
@@ -288,7 +285,6 @@ class TestDataValidator:
         assert ok is False
 
     def test_zero_co2_accepted(self):
-        """Zero emissions is valid (e.g. carbon neutral certified)."""
         ok, result = DataValidator.validate_co2_value(0)
         assert ok is True
         assert result == 0.0
@@ -407,26 +403,24 @@ class TestDocumentValidationViewSet:
         assert res.status_code == 200
         mock_delay.assert_called_once()
 
+    def test_viewer_cannot_trigger_validation(self, viewer_client, document):
+        document.file = "vendor_documents/2024/01/test.pdf"
+        document.save()
+        res = viewer_client.post(TRIGGER_URL, {"document_id": str(document.id)}, format="json")
+        assert res.status_code == 403
+
+    def test_viewer_can_still_list_validations(self, viewer_client, completed_validation):
+        res = viewer_client.get(VALIDATIONS_URL)
+        assert res.status_code == 200
+
 
 # ── Orchestrator (mocked AI) ──────────────────────────────────────────────────
-#
-# FIX SUMMARY:
-#   1. Removed @patch for "ReadabilityChecker" — this class does not exist in
-#      orchestrator.py. Patching it caused AttributeError on every test.
-#   2. Added @patch for "gate_run" — without this the orchestrator fails at the
-#      input gate before reaching any pipeline step (document has no real file).
-#   3. Updated _perfect_doc_mocks signature and all call sites accordingly.
 
 @pytest.mark.django_db
 class TestValidationOrchestrator:
 
     @staticmethod
     def _perfect_doc_mocks(MockPrep, MockRel, MockAuth, MockMeta, MockRisk):
-        """Configure mocks to simulate a well-formed carbon certificate.
-
-        ReadabilityChecker is intentionally absent — the orchestrator handles
-        readability inline (sets readability_passed=True after preprocessing).
-        """
         MockPrep.return_value.process.return_value = (True, "base64img", None)
         MockRel.return_value.classify.return_value = (True, {
             "is_relevant": True,
@@ -446,11 +440,10 @@ class TestValidationOrchestrator:
         mock_meta.expiry_date_confidence = Decimal("90")
         mock_meta.issuing_authority_confidence = Decimal("88")
         mock_meta.expiry_date = date.today() + timedelta(days=365)
+        mock_meta.co2_value = Decimal("1500")
         MockMeta.return_value.extract.return_value = (True, mock_meta, None)
         MockRisk.return_value.calculate.return_value = None
 
-    # Decorator order: innermost (bottom) → first positional arg after self.
-    # gate_run is outermost → last mock arg, before fixtures.
     @patch("ai_validation.services.orchestrator.gate_run", return_value=(True, "ok"))
     @patch("ai_validation.services.orchestrator.DocumentPreprocessor")
     @patch("ai_validation.services.orchestrator.RelevanceClassifier")
@@ -461,7 +454,6 @@ class TestValidationOrchestrator:
         self, MockRisk, MockMeta, MockAuth, MockRel, MockPrep, mock_gate,
         document, validation
     ):
-        """A complete, well-formed carbon certificate should auto-approve (no manual review)."""
         self._perfect_doc_mocks(MockPrep, MockRel, MockAuth, MockMeta, MockRisk)
 
         from ai_validation.services.orchestrator import ValidationOrchestrator
@@ -498,7 +490,6 @@ class TestValidationOrchestrator:
     @patch("ai_validation.services.orchestrator.gate_run", return_value=(True, "ok"))
     @patch("ai_validation.services.orchestrator.DocumentPreprocessor")
     def test_preprocessing_failure_marks_failed(self, MockPrep, mock_gate, document, validation):
-        """gate_run passes but preprocessing fails — validation must end as failed."""
         MockPrep.return_value.process.return_value = (False, None, "File not found")
 
         from ai_validation.services.orchestrator import ValidationOrchestrator
@@ -519,14 +510,13 @@ class TestValidationOrchestrator:
         self, MockRisk, MockMeta, MockAuth, MockRel, MockPrep, mock_gate,
         document, validation
     ):
-        """A document with SAMPLE/DRAFT watermarks should be flagged for review."""
         MockPrep.return_value.process.return_value = (True, "base64img", None)
         MockRel.return_value.classify.return_value = (True, {
             "is_relevant": True, "document_type": "Emission Report",
             "confidence": 70.0, "indicators": [],
         }, None)
         MockAuth.return_value.analyze.return_value = (True, {
-            "score": 50.0,   # floor — SAMPLE watermark detected
+            "score": 50.0,
             "indicators": [],
             "red_flags": ["SAMPLE watermark visible", "VOID stamp on header", "Lorem ipsum footer"],
         }, None)
@@ -537,6 +527,7 @@ class TestValidationOrchestrator:
         mock_meta.expiry_date_confidence = None
         mock_meta.issuing_authority_confidence = Decimal("20")
         mock_meta.expiry_date = None
+        mock_meta.co2_value = Decimal("100")
         MockMeta.return_value.extract.return_value = (True, mock_meta, None)
         MockRisk.return_value.calculate.return_value = None
 
@@ -572,6 +563,7 @@ class TestValidationOrchestrator:
         mock_meta.expiry_date_confidence = None
         mock_meta.issuing_authority_confidence = Decimal("20")
         mock_meta.expiry_date = None
+        mock_meta.co2_value = Decimal("100")
         MockMeta.return_value.extract.return_value = (True, mock_meta, None)
         MockRisk.return_value.calculate.return_value = None
 
@@ -597,8 +589,6 @@ class TestValidationOrchestrator:
         from ai_validation.services.orchestrator import ValidationOrchestrator
         ValidationOrchestrator().validate_document(document, validation)
 
-        # FIX: ReadabilityChecker does not exist in orchestrator — removed that check.
-        # The orchestrator handles readability inline after preprocessing.
         assert MockRel.return_value.classify.call_count == 1, (
             "BUG: relevance_classifier.classify called more than once"
         )
@@ -611,13 +601,6 @@ class TestValidationOrchestrator:
 
 
 # ── Confidence calculation ────────────────────────────────────────────────────
-#
-# FIX SUMMARY:
-#   1. _calculate_confidence → _confidence  (actual method name in orchestrator.py)
-#   2. _check_flag           → _flag_decision (actual method name in orchestrator.py)
-#   3. _flag_decision takes (validation, metadata) — pass None for metadata in unit tests.
-#   4. Removed validation.readability_score — not used in _confidence calculation.
-#      Actual weights: relevance 30%, authenticity 30%, extraction 40%.
 
 @pytest.mark.django_db
 class TestConfidenceCalculation:
@@ -627,16 +610,6 @@ class TestConfidenceCalculation:
         return ValidationOrchestrator()
 
     def test_perfect_document_confidence_above_threshold(self, validation):
-        """
-        A perfect carbon certificate should produce confidence well above
-        MIN_AUTO_APPROVE_CONFIDENCE (50).
-
-        Actual weights (relevance 30%, authenticity 30%, extraction 40%):
-          relevance:    95 * 0.30 = 28.5
-          authenticity: 90 * 0.30 = 27.0
-          extraction:   avg(90, 92, 90, 88) = 90 * 0.40 = 36.0
-          Total:                              = 91.5
-        """
         validation.relevance_confidence = Decimal("95")
         validation.authenticity_score = Decimal("90")
 
@@ -664,15 +637,6 @@ class TestConfidenceCalculation:
         assert float(confidence) > MIN_AUTO_APPROVE_CONFIDENCE
 
     def test_borderline_document_passes_with_correct_threshold(self, validation):
-        """
-        A borderline document (medium quality) should still auto-approve at threshold 50.
-
-        Actual weights (relevance 30%, authenticity 30%, extraction 40%):
-          relevance:    70 * 0.30 = 21.0
-          authenticity: 65 * 0.30 = 19.5
-          extraction:   65 * 0.40 = 26.0
-          Total:                  = 66.5 → passes (> 50)
-        """
         validation.relevance_confidence = Decimal("70")
         validation.authenticity_score = Decimal("65")
 
@@ -701,6 +665,38 @@ class TestConfidenceCalculation:
         confidence = self._make_orchestrator()._confidence(validation, mock_meta)
         assert float(confidence) < MIN_AUTO_APPROVE_CONFIDENCE
 
+    def test_zero_relevance_confidence_not_replaced_by_default(self, validation):
+        validation.relevance_confidence = Decimal("0")
+        validation.authenticity_score = Decimal("90")
+
+        mock_meta = MagicMock()
+        mock_meta.co2_extraction_confidence = Decimal("90")
+        mock_meta.issue_date_confidence = Decimal("90")
+        mock_meta.expiry_date_confidence = Decimal("90")
+        mock_meta.issuing_authority_confidence = Decimal("90")
+
+        confidence = self._make_orchestrator()._confidence(validation, mock_meta)
+        expected = (0 * 0.30) + (90 * 0.30) + (90 * 0.40)
+        assert abs(float(confidence) - expected) < 0.01, (
+            "BUG: relevance_confidence=0 must not be replaced by the 60 default"
+        )
+
+    def test_zero_authenticity_score_not_replaced_by_default(self, validation):
+        validation.relevance_confidence = Decimal("90")
+        validation.authenticity_score = Decimal("0")
+
+        mock_meta = MagicMock()
+        mock_meta.co2_extraction_confidence = Decimal("90")
+        mock_meta.issue_date_confidence = Decimal("90")
+        mock_meta.expiry_date_confidence = Decimal("90")
+        mock_meta.issuing_authority_confidence = Decimal("90")
+
+        confidence = self._make_orchestrator()._confidence(validation, mock_meta)
+        expected = (90 * 0.30) + (0 * 0.30) + (90 * 0.40)
+        assert abs(float(confidence) - expected) < 0.01, (
+            "BUG: authenticity_score=0 must not be replaced by the 60 default"
+        )
+
     def test_none_metadata_uses_default_extraction_score(self, validation):
         validation.relevance_confidence = Decimal("80")
         validation.authenticity_score = Decimal("80")
@@ -713,14 +709,12 @@ class TestConfidenceCalculation:
         validation.authenticity_red_flags = []
         validation.is_relevant = True
 
-        # FIX: method is _flag_decision(validation, metadata), not _check_flag(validation)
         should_flag, reason = self._make_orchestrator()._flag_decision(validation, None)
 
         assert should_flag is True
         assert "confidence" in reason.lower()
 
     def test_no_flag_for_good_document(self, validation):
-        """A document above the threshold with no red flags should not be flagged."""
         validation.overall_confidence = Decimal(str(MIN_AUTO_APPROVE_CONFIDENCE + 20))
         validation.authenticity_red_flags = []
         validation.is_relevant = True
@@ -745,6 +739,34 @@ class TestConfidenceCalculation:
         should_flag, reason = self._make_orchestrator()._flag_decision(validation, None)
         assert should_flag is True
         assert "compliance" in reason.lower() or "relevant" in reason.lower()
+
+    def test_zero_co2_value_not_flagged_as_missing(self, validation):
+        validation.overall_confidence = Decimal("80")
+        validation.authenticity_red_flags = []
+        validation.is_relevant = True
+        validation.detected_document_type = "Emission Report"
+
+        mock_meta = MagicMock()
+        mock_meta.co2_value = Decimal("0")
+        mock_meta.expiry_date = None
+
+        should_flag, reason = self._make_orchestrator()._flag_decision(validation, mock_meta)
+        assert "missing_co2_value" not in reason, (
+            "BUG: co2_value=0 (carbon neutral) must not be treated as missing data"
+        )
+
+    def test_none_co2_value_flagged_as_missing(self, validation):
+        validation.overall_confidence = Decimal("80")
+        validation.authenticity_red_flags = []
+        validation.is_relevant = True
+        validation.detected_document_type = "Emission Report"
+
+        mock_meta = MagicMock()
+        mock_meta.co2_value = None
+        mock_meta.expiry_date = None
+
+        should_flag, reason = self._make_orchestrator()._flag_decision(validation, mock_meta)
+        assert "missing_co2_value" in reason
 
 
 # ── Celery task ───────────────────────────────────────────────────────────────
@@ -786,7 +808,6 @@ class TestValidateDocumentTask:
         from ai_validation.tasks import validate_document_async
         result = validate_document_async(str(document.id))
 
-        # FIX: tasks.py now returns a dict — confirmed by our tasks.py fix
         assert result is not None
         assert "document_id" in result
         assert "validation_id" in result
@@ -804,7 +825,6 @@ class TestValidateDocumentTask:
 
     @patch("ai_validation.services.orchestrator.ValidationOrchestrator")
     def test_task_does_not_raise_attribute_error_on_overall_result(self, MockOrch, document):
-        """Tasks must not access validation.overall_result — that field does not exist."""
         document.file = "vendor_documents/2024/01/test.pdf"
         document.save()
 
@@ -893,7 +913,7 @@ class TestRiskCalculator:
         ExtractedMetadata.objects.create(
             document_validation=completed_validation,
             document=document,
-            co2_value=Decimal("6000"),   # above high_threshold of 5000
+            co2_value=Decimal("6000"),
             co2_unit="tonnes",
             co2_extraction_confidence=Decimal("90"),
         )
@@ -904,7 +924,7 @@ class TestRiskCalculator:
         ExtractedMetadata.objects.create(
             document_validation=completed_validation,
             document=document,
-            co2_value=Decimal("15000"),   # above critical_threshold of 12000
+            co2_value=Decimal("15000"),
             co2_unit="tonnes",
             co2_extraction_confidence=Decimal("90"),
         )
@@ -915,7 +935,7 @@ class TestRiskCalculator:
         ExtractedMetadata.objects.create(
             document_validation=completed_validation,
             document=document,
-            co2_value=Decimal("1000000"),   # 1000 tonnes when converted
+            co2_value=Decimal("1000000"),
             co2_unit="kg",
             co2_extraction_confidence=Decimal("90"),
         )
@@ -930,10 +950,10 @@ class TestRiskCalculator:
             co2_value=Decimal("100"),
             co2_unit="tonnes",
             co2_extraction_confidence=Decimal("90"),
-            expiry_date=date.today() - timedelta(days=10),   # expired
+            expiry_date=date.today() - timedelta(days=10),
         )
         profile = RiskCalculator().calculate(vendor)
-        assert float(profile.risk_score) >= 25   # expired penalty is +25
+        assert float(profile.risk_score) >= 25
 
     def test_expiring_soon_increases_score(self, vendor, threshold, document, completed_validation):
         ExtractedMetadata.objects.create(
@@ -942,20 +962,19 @@ class TestRiskCalculator:
             co2_value=Decimal("100"),
             co2_unit="tonnes",
             co2_extraction_confidence=Decimal("90"),
-            expiry_date=date.today() + timedelta(days=15),   # expiring in < 30 days
+            expiry_date=date.today() + timedelta(days=15),
         )
         profile = RiskCalculator().calculate(vendor)
-        assert float(profile.risk_score) >= 15   # expiring soon penalty is +15
+        assert float(profile.risk_score) >= 15
 
     def test_future_expiry_no_extra_penalty(self, vendor, threshold, document, completed_validation):
-        """A certificate with a healthy future expiry should not attract an expiry penalty."""
         ExtractedMetadata.objects.create(
             document_validation=completed_validation,
             document=document,
             co2_value=Decimal("100"),
             co2_unit="tonnes",
             co2_extraction_confidence=Decimal("90"),
-            expiry_date=date.today() + timedelta(days=180),   # 6 months away — no penalty
+            expiry_date=date.today() + timedelta(days=180),
         )
         profile = RiskCalculator().calculate(vendor)
         assert float(profile.risk_score) < 25
@@ -978,7 +997,7 @@ class TestRiskCalculator:
         ExtractedMetadata.objects.create(
             document_validation=completed_validation,
             document=document,
-            co2_value=Decimal("6000"),   # above high_threshold
+            co2_value=Decimal("6000"),
             co2_unit="tonnes",
             co2_extraction_confidence=Decimal("90"),
         )
@@ -989,7 +1008,7 @@ class TestRiskCalculator:
         ExtractedMetadata.objects.create(
             document_validation=completed_validation,
             document=document,
-            co2_value=Decimal("100"),   # well below all thresholds
+            co2_value=Decimal("100"),
             co2_unit="tonnes",
             co2_extraction_confidence=Decimal("90"),
         )
@@ -1038,6 +1057,14 @@ class TestVendorRiskProfileViewSet:
         res = officer_client.post(risk_recalc_url(risk_profile.id))
         assert res.status_code == 200
         MockRisk.return_value.calculate.assert_called_once()
+
+    def test_viewer_cannot_recalculate(self, viewer_client, risk_profile):
+        res = viewer_client.post(risk_recalc_url(risk_profile.id))
+        assert res.status_code == 403
+
+    def test_viewer_can_still_list_risk_profiles(self, viewer_client, risk_profile):
+        res = viewer_client.get(RISK_URL)
+        assert res.status_code == 200
 
     def test_response_includes_vendor_name(self, officer_client, risk_profile):
         res = officer_client.get(RISK_URL)
@@ -1120,6 +1147,13 @@ class TestManualReviewQueueViewSet:
     def test_unauthenticated_cannot_assign(self, anon_client, review_item):
         assert anon_client.post(review_assign_url(review_item.id)).status_code == 401
 
+    def test_viewer_cannot_assign_review(self, viewer_client, review_item):
+        res = viewer_client.post(review_assign_url(review_item.id))
+        assert res.status_code == 403
+        review_item.refresh_from_db()
+        assert review_item.status == "pending"
+        assert review_item.assigned_to is None
+
     # ── resolve action ────────────────────────────────────────────────────────
 
     def test_officer_can_approve_review(self, officer_client, review_item):
@@ -1132,6 +1166,27 @@ class TestManualReviewQueueViewSet:
         review_item.refresh_from_db()
         assert review_item.resolution_decision == "approved"
         assert review_item.status == "resolved"
+
+    def test_viewer_cannot_resolve_review(self, viewer_client, review_item):
+        res = viewer_client.post(
+            review_resolve_url(review_item.id),
+            {"decision": "approved"},
+            format="json",
+        )
+        assert res.status_code == 403
+        review_item.refresh_from_db()
+        assert review_item.status == "pending"
+
+    def test_viewer_cannot_bypass_review_via_direct_document_status_change(self, viewer_client, review_item):
+        doc = review_item.document_validation.document
+        original_status = doc.status
+        viewer_client.post(
+            review_resolve_url(review_item.id),
+            {"decision": "approved"},
+            format="json",
+        )
+        doc.refresh_from_db()
+        assert doc.status == original_status
 
     def test_approve_sets_document_valid(self, officer_client, review_item):
         doc = review_item.document_validation.document
@@ -1246,3 +1301,42 @@ class TestRiskScoreDisplay:
     def test_medium_score_displays_correctly(self):
         from ai_validation.constants import RISK_SCORE_DISPLAY_DIVISOR
         assert 50 / RISK_SCORE_DISPLAY_DIVISOR == 2.5
+
+
+# ── DocumentPreprocessor poppler check (module-level, once per process) ───────
+
+class TestDocumentPreprocessorPopplerCheck:
+
+    def test_check_runs_only_once(self):
+        import ai_validation.services.document_preprocessor as dp_module
+        dp_module._poppler_checked = False
+
+        with patch("ai_validation.services.document_preprocessor.subprocess.run") as mock_run:
+            dp_module.DocumentPreprocessor()
+            dp_module.DocumentPreprocessor()
+            dp_module.DocumentPreprocessor()
+            assert mock_run.call_count == 1
+
+        dp_module._poppler_checked = False
+
+    def test_timeout_does_not_raise(self):
+        import ai_validation.services.document_preprocessor as dp_module
+        import subprocess as sp
+        dp_module._poppler_checked = False
+
+        with patch(
+            "ai_validation.services.document_preprocessor.subprocess.run",
+            side_effect=sp.TimeoutExpired(cmd="pdftoppm", timeout=5),
+        ):
+            dp_module.DocumentPreprocessor()
+
+        dp_module._poppler_checked = False
+
+
+# ── LangChain client fallback logging ─────────────────────────────────────────
+
+class TestLangChainClientRetryTuning:
+
+    def test_max_retry_sleep_reduced(self):
+        from ai_validation.services.langchain_client import _MAX_RETRY_SLEEP
+        assert _MAX_RETRY_SLEEP == 10
