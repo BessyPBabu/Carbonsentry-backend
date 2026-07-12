@@ -6,11 +6,16 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
-
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from accounts.permissions import IsAdmin, IsOfficer
 from vendors.models import Vendor, Document, Industry, IndustryRequiredDocument
 from vendors.serializers.vendor_serializers import VendorListSerializer, VendorDetailSerializer
 from vendors.serializers.document_serializers import DocumentListSerializer
+from vendors.utils.validators import (
+    validate_vendor_name,
+    validate_vendor_email,
+    validate_vendor_country,
+)
 
 logger = logging.getLogger("vendors.vendor_views")
 
@@ -47,6 +52,8 @@ class VendorListCreateView(APIView):
     def get_permissions(self):
 
         if self.request.method == "POST":
+            if not self.request.user or not self.request.user.is_authenticated:
+                return [IsAuthenticated()]
             return [IsAuthenticated(), (IsOfficer() if self.request.user.role == "officer" else IsAdmin())]
         return [IsAuthenticated()]
 
@@ -100,24 +107,28 @@ class VendorListCreateView(APIView):
         if not org:
             return no_org_response()
 
-        name          = request.data.get("name", "").strip()
-        industry_id   = request.data.get("industry")
-        country       = request.data.get("country", "").strip()
-        contact_email = request.data.get("contact_email", "").strip().lower()
-
+        industry_id = request.data.get("industry")
         errors = {}
-        if not name:
-            errors["name"] = ["Vendor name is required"]
-        elif len(name) > 255:
-            errors["name"] = ["Vendor name must be 255 characters or less"]
+        name = country = contact_email = None
+
+        try:
+            name = validate_vendor_name(request.data.get("name", ""))
+        except DRFValidationError as exc:
+            errors["name"] = list(exc.detail)
+
+        try:
+            country = validate_vendor_country(request.data.get("country", ""))
+        except DRFValidationError as exc:
+            errors["country"] = list(exc.detail)
+
+        try:
+            contact_email = validate_vendor_email(request.data.get("contact_email", ""))
+        except DRFValidationError as exc:
+            errors["contact_email"] = list(exc.detail)
+
         if not industry_id:
             errors["industry"] = ["Industry is required"]
-        if not country:
-            errors["country"] = ["Country is required"]
-        elif len(country) > 100:
-            errors["country"] = ["Country must be 100 characters or less"]
-        if not contact_email:
-            errors["contact_email"] = ["Contact email is required"]
+
         if errors:
             return Response(errors, status=status.HTTP_400_BAD_REQUEST)
 

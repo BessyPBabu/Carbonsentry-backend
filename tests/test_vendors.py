@@ -11,10 +11,14 @@ from vendors.models import (
     Industry, DocumentType, IndustryRequiredDocument,
     Vendor, Document, VendorBulkUpload,
 )
-from vendors.services.csv_parser import parse_csv, CsvParsingError
+from vendors.services.csv_parser import parse_csv, CsvParsingError, MAX_ROWS
 from vendors.services.upload_token_services import UploadTokenService
 from vendors.services.industry_mapper import get_or_create_industry
 from vendors.services.vendor_creator import VendorCreatorService, VendorCreationError
+from vendors.utils.validators import (
+    validate_vendor_name, validate_vendor_email, validate_vendor_country,
+)
+from rest_framework.exceptions import ValidationError
 
 
 # ── URL helpers ───────────────────────────────────────────────────────────────
@@ -204,10 +208,86 @@ class TestDocumentModel:
         assert document.upload_attempts == 0
 
     def test_unique_vendor_document_type(self, vendor, doc_type):
-        # FIX: create the first one here, then attempt the duplicate
         Document.objects.create(vendor=vendor, document_type=doc_type, status="pending")
         with pytest.raises(IntegrityError):
             Document.objects.create(vendor=vendor, document_type=doc_type, status="pending")
+
+
+# ── Vendor field validators ────────────────────────────────────────────────────
+
+class TestVendorNameValidator:
+
+    def test_valid_name_passes(self):
+        assert validate_vendor_name("Acme Corp") == "Acme Corp"
+
+    def test_strips_and_collapses_whitespace(self):
+        assert validate_vendor_name("  Acme   Corp  ") == "Acme Corp"
+
+    def test_allows_ampersand_period_comma_apostrophe(self):
+        assert validate_vendor_name("Rock & Roll, Inc.") == "Rock & Roll, Inc."
+
+    def test_underscore_rejected(self):
+        with pytest.raises(ValidationError):
+            validate_vendor_name("Acme_Corp")
+
+    def test_special_characters_rejected(self):
+        with pytest.raises(ValidationError):
+            validate_vendor_name("Acme<script>")
+
+    def test_only_digits_rejected(self):
+        with pytest.raises(ValidationError):
+            validate_vendor_name("12345")
+
+    def test_too_short_rejected(self):
+        with pytest.raises(ValidationError):
+            validate_vendor_name("A")
+
+    def test_too_long_rejected(self):
+        with pytest.raises(ValidationError):
+            validate_vendor_name("A" * 256)
+
+    def test_empty_rejected(self):
+        with pytest.raises(ValidationError):
+            validate_vendor_name("")
+
+
+class TestVendorEmailValidator:
+
+    def test_valid_email_passes(self):
+        assert validate_vendor_email("Vendor@Example.com") == "vendor@example.com"
+
+    def test_invalid_format_rejected(self):
+        with pytest.raises(ValidationError):
+            validate_vendor_email("not-an-email")
+
+    def test_consecutive_dots_rejected(self):
+        with pytest.raises(ValidationError):
+            validate_vendor_email("bad..email@example.com")
+
+    def test_empty_rejected(self):
+        with pytest.raises(ValidationError):
+            validate_vendor_email("")
+
+
+class TestVendorCountryValidator:
+
+    def test_valid_country_passes(self):
+        assert validate_vendor_country("India") == "India"
+
+    def test_hyphenated_country_passes(self):
+        assert validate_vendor_country("Timor-Leste") == "Timor-Leste"
+
+    def test_digits_rejected(self):
+        with pytest.raises(ValidationError):
+            validate_vendor_country("India123")
+
+    def test_too_short_rejected(self):
+        with pytest.raises(ValidationError):
+            validate_vendor_country("A")
+
+    def test_empty_rejected(self):
+        with pytest.raises(ValidationError):
+            validate_vendor_country("")
 
 
 # ── Vendor list / create ──────────────────────────────────────────────────────
@@ -222,6 +302,13 @@ class TestVendorListCreateView:
 
     def test_unauthenticated_blocked(self, anon_client):
         assert anon_client.get(VENDOR_LIST_URL).status_code == 401
+
+    def test_unauthenticated_post_returns_401_not_500(self, anon_client, industry):
+        res = anon_client.post(VENDOR_LIST_URL, {
+            "name": "Anon Vendor", "industry": str(industry.id),
+            "country": "India", "contact_email": "anon@x.com",
+        })
+        assert res.status_code == 401
 
     def test_org_isolation(self, officer_client, other_vendor):
         res = officer_client.get(VENDOR_LIST_URL)
@@ -273,6 +360,54 @@ class TestVendorListCreateView:
             "industry": str(industry.id), "country": "India", "contact_email": "x@x.com",
         })
         assert res.status_code == 400
+        assert "name" in res.data
+
+    def test_create_vendor_underscore_name_400(self, officer_client, industry):
+        res = officer_client.post(VENDOR_LIST_URL, {
+            "name": "Acme_Corp", "industry": str(industry.id),
+            "country": "India", "contact_email": "underscore@x.com",
+        })
+        assert res.status_code == 400
+        assert "name" in res.data
+
+    def test_create_vendor_special_char_name_400(self, officer_client, industry):
+        res = officer_client.post(VENDOR_LIST_URL, {
+            "name": "Acme<script>alert(1)</script>", "industry": str(industry.id),
+            "country": "India", "contact_email": "xss@x.com",
+        })
+        assert res.status_code == 400
+        assert "name" in res.data
+
+    def test_create_vendor_digits_only_name_400(self, officer_client, industry):
+        res = officer_client.post(VENDOR_LIST_URL, {
+            "name": "12345", "industry": str(industry.id),
+            "country": "India", "contact_email": "digits@x.com",
+        })
+        assert res.status_code == 400
+        assert "name" in res.data
+
+    def test_create_vendor_ampersand_name_allowed(self, officer_client, industry):
+        res = officer_client.post(VENDOR_LIST_URL, {
+            "name": "Smith & Sons, Inc.", "industry": str(industry.id),
+            "country": "India", "contact_email": "smithsons@x.com",
+        })
+        assert res.status_code == 201
+
+    def test_create_vendor_invalid_email_400(self, officer_client, industry):
+        res = officer_client.post(VENDOR_LIST_URL, {
+            "name": "Valid Name", "industry": str(industry.id),
+            "country": "India", "contact_email": "not-an-email",
+        })
+        assert res.status_code == 400
+        assert "contact_email" in res.data
+
+    def test_create_vendor_invalid_country_400(self, officer_client, industry):
+        res = officer_client.post(VENDOR_LIST_URL, {
+            "name": "Valid Name", "industry": str(industry.id),
+            "country": "India123", "contact_email": "valid@x.com",
+        })
+        assert res.status_code == 400
+        assert "country" in res.data
 
     def test_create_vendor_missing_industry_400(self, officer_client):
         res = officer_client.post(VENDOR_LIST_URL, {
@@ -402,6 +537,18 @@ class TestVendorBulkUploadView:
         assert res.status_code == 200
         assert res.data["success_count"] >= 1
 
+    def test_invalid_name_in_csv_row_recorded_as_failure(self, officer_client, industry):
+        res = officer_client.post(VENDOR_BULK_URL, {
+            "csv_file": self._csv([{
+                "name": "Bad_Name", "email": "bad@bad.com",
+                "industry": "Technology", "country": "India",
+            }])
+        }, format="multipart")
+        assert res.status_code == 200
+        assert res.data["failure_count"] == 1
+        assert res.data["success_count"] == 0
+        assert not Vendor.objects.filter(contact_email="bad@bad.com").exists()
+
     def test_returns_bulk_upload_summary(self, officer_client, industry):
         res = officer_client.post(VENDOR_BULK_URL, {
             "csv_file": self._csv([{
@@ -456,10 +603,23 @@ class TestConfigEndpoints:
         assert res.status_code == 200
         assert any(i["name"] == "Technology" for i in res.data)
 
-    def test_create_industry(self, officer_client):
+    def test_officer_can_create_industry(self, officer_client):
         res = officer_client.post(INDUSTRY_URL, {"name": "Finance", "description": ""})
         assert res.status_code == 201
         assert Industry.objects.filter(name="Finance").exists()
+
+    def test_admin_can_create_industry(self, admin_client):
+        res = admin_client.post(INDUSTRY_URL, {"name": "Insurance", "description": ""})
+        assert res.status_code == 201
+
+    def test_viewer_cannot_create_industry(self, viewer_client):
+        res = viewer_client.post(INDUSTRY_URL, {"name": "Blocked", "description": ""})
+        assert res.status_code == 403
+        assert not Industry.objects.filter(name="Blocked").exists()
+
+    def test_viewer_can_still_list_industries(self, viewer_client, industry):
+        res = viewer_client.get(INDUSTRY_URL)
+        assert res.status_code == 200
 
     def test_create_industry_empty_name_400(self, officer_client):
         assert officer_client.post(INDUSTRY_URL, {"name": "   "}).status_code == 400
@@ -469,8 +629,24 @@ class TestConfigEndpoints:
         assert res.status_code == 200
         assert any(d["name"] == "Emission Report" for d in res.data)
 
-    def test_create_document_type(self, officer_client):
+    def test_officer_can_create_document_type(self, officer_client):
         assert officer_client.post(DOC_TYPE_URL, {"name": "New Doc", "description": ""}).status_code == 201
+
+    def test_viewer_cannot_create_document_type(self, viewer_client):
+        res = viewer_client.post(DOC_TYPE_URL, {"name": "Blocked Doc", "description": ""})
+        assert res.status_code == 403
+
+    def test_viewer_cannot_create_industry_document_mapping(self, viewer_client, industry, doc_type):
+        res = viewer_client.post("/api/vendors/config/industry-documents/", {
+            "industry": str(industry.id), "document_type": str(doc_type.id), "mandatory": True,
+        })
+        assert res.status_code == 403
+
+    def test_officer_can_create_industry_document_mapping(self, officer_client, industry, doc_type):
+        res = officer_client.post("/api/vendors/config/industry-documents/", {
+            "industry": str(industry.id), "document_type": str(doc_type.id), "mandatory": True,
+        })
+        assert res.status_code == 201
 
     def test_unauthenticated_blocked_on_config(self, anon_client):
         assert anon_client.get(INDUSTRY_URL).status_code == 401
@@ -568,30 +744,22 @@ class TestDocumentResendLinkView:
         res = officer_client.post(doc_resend_url(invalid_document.id))
         assert res.status_code == 200
         invalid_document.refresh_from_db()
-        # invalid resets to pending
         assert invalid_document.status == "pending"
 
-    # FIX: pending IS in resendable = ('pending', 'invalid', 'expired').
-    # The original test wrongly expected 400. Pending documents need a fresh
-    # link when the vendor never uploaded — this is the primary use case.
     @patch("vendors.views.document_views.EmailService.send")
     @patch("vendors.views.document_views.UploadTokenService.generate_for_vendor")
     def test_resend_for_pending_document_succeeds(self, mock_token, mock_email, officer_client, document):
-        """Pending documents can be resent — vendor may not have received or used the link."""
         mock_token.return_value = "new-token"
         res = officer_client.post(doc_resend_url(document.id))
         assert res.status_code == 200
-        # pending stays pending (no file to clear, no status reset needed)
         document.refresh_from_db()
         assert document.status == "pending"
 
     def test_cannot_resend_uploaded_document(self, officer_client, uploaded_document):
-        """uploaded is NOT resendable — vendor already submitted the file."""
         res = officer_client.post(doc_resend_url(uploaded_document.id))
         assert res.status_code == 400
 
     def test_cannot_resend_valid_document(self, officer_client, vendor, doc_type):
-        """valid documents need no resend."""
         valid_doc = Document.objects.create(
             vendor=vendor,
             document_type=doc_type,
@@ -632,9 +800,10 @@ class TestVendorPublicUploadView:
         assert "vendor_name" in res.data
         assert len(res.data["pending_documents"]) >= 1
 
-    def test_invalid_token_404(self, anon_client):
+    def test_invalid_token_returns_friendly_404_body(self, anon_client):
         res = anon_client.get(public_upload_url("totally-invalid-token-xyz"))
         assert res.status_code == 404
+        assert "detail" in res.data
 
     def test_expired_token_400(self, anon_client, vendor):
         vendor.upload_token = "expired-token"
@@ -684,6 +853,17 @@ class TestVendorPublicUploadView:
             format="multipart",
         )
         assert res.status_code == 404
+
+    def test_upload_invalid_token_returns_friendly_404(self, anon_client, document):
+        f = io.BytesIO(b"content")
+        f.name = "doc.pdf"
+        res = anon_client.post(
+            public_upload_url("bad-token-xyz"),
+            {"document_id": str(document.id), "file": f},
+            format="multipart",
+        )
+        assert res.status_code == 404
+        assert "detail" in res.data
 
     def test_token_cleared_when_all_docs_uploaded(self, anon_client, vendor_with_token, document):
         f = io.BytesIO(b"content")
@@ -745,6 +925,12 @@ class TestCsvParser:
         assert row["name"] == "Foo"
         assert row["contact_email"] == "foo@foo.com"
 
+    def test_exceeds_max_rows_raises(self):
+        header = "name,contact_email,industry,country\n"
+        rows = "\n".join(f"Vendor{i},v{i}@v.com,Tech,India" for i in range(MAX_ROWS + 1))
+        with pytest.raises(CsvParsingError, match="exceeds maximum"):
+            list(parse_csv(self._f(header + rows)))
+
 
 # ── Upload token service ──────────────────────────────────────────────────────
 
@@ -773,6 +959,40 @@ class TestUploadTokenService:
         vendor.refresh_from_db()
         assert vendor.upload_token == t2
 
+
+# ── Document download token expiry ────────────────────────────────────────────
+
+@pytest.mark.django_db
+class TestDocumentDownloadTokenExpiry:
+
+    def _document_with_file(self, vendor, doc_type):
+        doc = Document.objects.create(vendor=vendor, document_type=doc_type, status="uploaded")
+        doc.file.save("test.pdf", io.BytesIO(b"%PDF-1.4 fake"), save=True)
+        return doc
+
+    def test_expired_token_returns_403(self, anon_client, vendor, doc_type):
+        doc = self._document_with_file(vendor, doc_type)
+        vendor.upload_token = "dl-token"
+        vendor.upload_token_expires_at = timezone.now() - timedelta(hours=1)
+        vendor.save()
+        res = anon_client.get(f"/api/vendors/documents/{doc.id}/download/?token=dl-token")
+        assert res.status_code == 403
+
+    def test_missing_expiry_field_treated_as_unauthorized(self, anon_client, vendor, doc_type):
+        doc = self._document_with_file(vendor, doc_type)
+        vendor.upload_token = "dl-token-2"
+        vendor.upload_token_expires_at = None
+        vendor.save()
+        res = anon_client.get(f"/api/vendors/documents/{doc.id}/download/?token=dl-token-2")
+        assert res.status_code == 403
+
+    def test_valid_unexpired_token_returns_200(self, anon_client, vendor, doc_type):
+        doc = self._document_with_file(vendor, doc_type)
+        vendor.upload_token = "dl-token-3"
+        vendor.upload_token_expires_at = timezone.now() + timedelta(hours=1)
+        vendor.save()
+        res = anon_client.get(f"/api/vendors/documents/{doc.id}/download/?token=dl-token-3")
+        assert res.status_code == 200
 
 # ── Industry mapper ───────────────────────────────────────────────────────────
 
@@ -830,6 +1050,30 @@ class TestVendorCreatorService:
                 industry=industry,
             )
 
+    def test_underscore_name_raises(self, verified_org, industry):
+        with pytest.raises(VendorCreationError):
+            VendorCreatorService.create_vendor(
+                organization=verified_org,
+                data={"name": "Bad_Name", "contact_email": "bad@svc.com", "country": "India"},
+                industry=industry,
+            )
+
+    def test_invalid_email_raises(self, verified_org, industry):
+        with pytest.raises(VendorCreationError):
+            VendorCreatorService.create_vendor(
+                organization=verified_org,
+                data={"name": "Good Name", "contact_email": "not-an-email", "country": "India"},
+                industry=industry,
+            )
+
+    def test_invalid_country_raises(self, verified_org, industry):
+        with pytest.raises(VendorCreationError):
+            VendorCreatorService.create_vendor(
+                organization=verified_org,
+                data={"name": "Good Name", "contact_email": "good@svc.com", "country": "India123"},
+                industry=industry,
+            )
+
     @patch("vendors.services.email_campaign_service.EmailCampaignService.run")
     def test_send_emails_true_calls_campaign(self, mock_run, verified_org, industry):
         VendorCreatorService.create_vendor(
@@ -881,3 +1125,36 @@ class TestVendorBulkUploadSerializer:
         from vendors.serializers.bulk_upload_serializers import VendorBulkUploadSerializer
         s = VendorBulkUploadSerializer(data={"csv_file": self._file(size=11 * 1024 * 1024)})
         assert not s.is_valid()
+
+
+# ── VendorCreateSerializer (now using shared validators) ──────────────────────
+
+@pytest.mark.django_db
+class TestVendorCreateSerializer:
+
+    def test_valid_data_passes(self, industry):
+        from vendors.serializers.vendor_serializers import VendorCreateSerializer
+        s = VendorCreateSerializer(data={
+            "name": "Serializer Vendor", "country": "India",
+            "contact_email": "ser@v.com", "industry": str(industry.id),
+        })
+        assert s.is_valid(), s.errors
+
+    def test_underscore_name_rejected(self, industry):
+        from vendors.serializers.vendor_serializers import VendorCreateSerializer
+        s = VendorCreateSerializer(data={
+            "name": "Bad_Name", "country": "India",
+            "contact_email": "ser2@v.com", "industry": str(industry.id),
+        })
+        assert not s.is_valid()
+        assert "name" in s.errors
+
+    def test_invalid_email_rejected(self, industry):
+        from vendors.serializers.vendor_serializers import VendorCreateSerializer
+        s = VendorCreateSerializer(data={
+            "name": "Good Name", "country": "India",
+            "contact_email": "bad-email", "industry": str(industry.id),
+        })
+        assert not s.is_valid()
+        assert "contact_email" in s.errors
+     

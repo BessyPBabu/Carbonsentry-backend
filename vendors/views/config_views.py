@@ -5,6 +5,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 
+from accounts.permissions import IsAdminOrOfficer
 from vendors.models import Industry, DocumentType, IndustryRequiredDocument
 from vendors.serializers.industry_serializers import IndustrySerializer
 from vendors.serializers.document_type_serializers import DocumentTypeSerializer
@@ -16,7 +17,11 @@ logger = logging.getLogger("vendors.config_views")
 
 
 class IndustryListCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+
+    def get_permissions(self):
+        if self.request.method == "POST":
+            return [IsAuthenticated(), IsAdminOrOfficer()]
+        return [IsAuthenticated()]
 
     def get(self, request):
         industries = Industry.objects.all().order_by("name")
@@ -31,7 +36,11 @@ class IndustryListCreateView(APIView):
 
 
 class DocumentTypeListCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+
+    def get_permissions(self):
+        if self.request.method == "POST":
+            return [IsAuthenticated(), IsAdminOrOfficer()]
+        return [IsAuthenticated()]
 
     def get(self, request):
         docs = DocumentType.objects.all().order_by("name")
@@ -46,7 +55,11 @@ class DocumentTypeListCreateView(APIView):
 
 
 class IndustryRequiredDocumentListCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+
+    def get_permissions(self):
+        if self.request.method == "POST":
+            return [IsAuthenticated(), IsAdminOrOfficer()]
+        return [IsAuthenticated()]
 
     def get(self, request):
         mappings = (

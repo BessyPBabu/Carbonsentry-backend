@@ -61,7 +61,7 @@ class VendorPublicUploadView(APIView):
                 ]
             }, status=status.HTTP_200_OK)
         
-        except Vendor.DoesNotExist:
+        except Http404:
             logger.warning(
                 "Upload link access rejected - invalid token",
                 extra={"token": token[:8] + "..."}
@@ -70,9 +70,6 @@ class VendorPublicUploadView(APIView):
                 {"detail": "Invalid upload link. Please check your email for the correct link."},
                 status=status.HTTP_404_NOT_FOUND,
             )
-        
-        except Http404:
-            raise
         
         except Exception as e:
             logger.exception(
@@ -175,7 +172,7 @@ class VendorPublicUploadView(APIView):
                 status=status.HTTP_200_OK,
             )
 
-        except Vendor.DoesNotExist:
+        except Http404:
             logger.warning(
                 "Upload rejected - invalid token",
                 extra={"token": token[:8] + "..."}
@@ -184,9 +181,6 @@ class VendorPublicUploadView(APIView):
                 {"detail": "Invalid upload link. Please check your email for the correct link."},
                 status=status.HTTP_404_NOT_FOUND,
             )
-        
-        except Http404:
-            raise
 
         except Exception as e:
             logger.exception(

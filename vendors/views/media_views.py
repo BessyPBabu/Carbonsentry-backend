@@ -2,6 +2,7 @@ import logging
 import mimetypes
 from django.http import FileResponse, Http404, HttpResponse
 from django.views import View
+from django.utils import timezone
 from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
 from pathlib import Path
@@ -73,6 +74,8 @@ class DocumentFileView(APIView):
             
         except Document.DoesNotExist:
             raise Http404("Document not found")
+        except Http404:
+            raise
         except Exception as e:
             logger.exception(f"Error serving document {document_id}")
             return HttpResponse("Server error", status=500)
@@ -101,7 +104,11 @@ class DocumentDownloadView(APIView):
             
             token = request.GET.get('token')
             if token and document.vendor.upload_token == token:
-                is_authorized = True
+                expires_at = document.vendor.upload_token_expires_at
+                if expires_at and expires_at > timezone.now():
+                    is_authorized = True
+                else:
+                    logger.warning(f"Download rejected - token expired: {document_id}")
             
             if not is_authorized:
                 return HttpResponse("Unauthorized", status=403)
@@ -118,7 +125,7 @@ class DocumentDownloadView(APIView):
                 open(file_path, 'rb'),
                 content_type=content_type
             )
-            filename = f"{document.document_type.name}_{document.vendor.name}.{file_path.suffix}"
+            filename = f"{document.document_type.name}_{document.vendor.name}{file_path.suffix}"
             filename = "".join(c for c in filename if c.isalnum() or c in (' ', '.', '_', '-'))
             
             response['Content-Disposition'] = f'attachment; filename="{filename}"'

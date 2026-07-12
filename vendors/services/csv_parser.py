@@ -12,6 +12,7 @@ REQUIRED_COLUMNS = {
     "country",
 }
 
+MAX_ROWS = 5000
 
 class CsvParsingError(Exception):
     pass
@@ -56,7 +57,17 @@ def parse_csv(file) -> Iterator[Tuple[int, Dict[str, str]]]:
 
     logger.info("CSV header validation successful")
 
+    row_count = 0
+
     for index, row in enumerate(reader, start=2):
+        row_count += 1
+        if row_count > MAX_ROWS:
+            logger.error(
+                "CSV exceeds maximum row limit",
+                extra={"max_rows": MAX_ROWS},
+            )
+            raise CsvParsingError(f"CSV file exceeds maximum of {MAX_ROWS} rows")
+
         normalized_row = {}
 
         for key, value in row.items():

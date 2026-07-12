@@ -1,6 +1,12 @@
 import logging
 from django.db import transaction
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from vendors.models import Vendor, Document, IndustryRequiredDocument
+from vendors.utils.validators import (
+    validate_vendor_name,
+    validate_vendor_email,
+    validate_vendor_country,
+)
 
 logger = logging.getLogger("vendors.vendor_creator")
 
@@ -12,17 +18,23 @@ class VendorCreatorService:
 
     @classmethod
     @transaction.atomic
-    def create_vendor(cls, organization, data, industry,send_emails=False):
+    def create_vendor(cls, organization, data, industry, send_emails=False):
         try:
-            name = data.get("name", "").strip()
-            if not name:
-                raise VendorCreationError("Vendor name is required")
+            name = validate_vendor_name(data.get("name", ""))
+            country = validate_vendor_country(data.get("country", ""))
+            contact_email = validate_vendor_email(data.get("contact_email", ""))
+        except DRFValidationError as exc:
+            message = str(exc.detail[0]) if exc.detail else "Invalid vendor data"
+            logger.warning("Vendor validation failed", extra={"error": message})
+            raise VendorCreationError(message)
+
+        try:
             vendor = Vendor.objects.create(
                 organization=organization,
-                name=data["name"],
+                name=name,
                 industry=industry,
-                country=data["country"],
-                contact_email=data["contact_email"],
+                country=country,
+                contact_email=contact_email,
             )
             
             required_docs = IndustryRequiredDocument.objects.filter(

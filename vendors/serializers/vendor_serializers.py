@@ -1,5 +1,10 @@
 from rest_framework import serializers
 from vendors.models import Vendor
+from vendors.utils.validators import (
+    validate_vendor_name,
+    validate_vendor_email,
+    validate_vendor_country,
+)
 
 
 class VendorListSerializer(serializers.ModelSerializer):
@@ -38,6 +43,7 @@ class VendorDetailSerializer(serializers.ModelSerializer):
             "last_updated",
         ]
 
+
 class VendorCreateSerializer(serializers.ModelSerializer):
     
     class Meta:
@@ -50,16 +56,10 @@ class VendorCreateSerializer(serializers.ModelSerializer):
         ]
     
     def validate_name(self, value):
-        if not value or not value.strip():
-            raise serializers.ValidationError("Vendor name cannot be empty")
-        return value.strip()
+        return validate_vendor_name(value)
     
     def validate_contact_email(self, value):
-        if not value or not value.strip():
-            raise serializers.ValidationError("Contact email cannot be empty")
-        return value.strip().lower()
+        return validate_vendor_email(value)
     
     def validate_country(self, value):
-        if not value or not value.strip():
-            raise serializers.ValidationError("Country cannot be empty")
-        return value.strip()
+        return validate_vendor_country(value)
