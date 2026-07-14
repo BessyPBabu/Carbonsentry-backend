@@ -4,6 +4,7 @@ from datetime import timedelta
 from unittest.mock import patch
 from django.utils import timezone
 from django.core import mail
+from django.core.cache import cache
 
 from vendors.models import Vendor, Industry, Document, DocumentType
 from communication.models import ChatToken, Message
@@ -17,6 +18,13 @@ VERIFY_OTP_URL  = "/api/communication/verify-otp/"
 def messages_url(vid):    return f"/api/communication/chats/{vid}/messages/"
 def validate_url(token):  return f"/api/communication/validate/{token}/"
 def revoke_url(token_id): return f"/api/communication/tokens/{token_id}/revoke/"
+
+
+@pytest.fixture(autouse=True)
+def clear_throttle_cache():
+    cache.clear()
+    yield
+    cache.clear()
 
 
 @pytest.fixture
@@ -141,13 +149,20 @@ class TestMessageModel:
         assert "Chat Vendor" in str(message_from_vendor)
 
 
-
 @pytest.mark.django_db
 class TestChatVendorListView:
 
-    def test_authenticated_user_can_list(self, officer_client, message_from_vendor):
+    def test_officer_can_list(self, officer_client, message_from_vendor):
         res = officer_client.get(CHAT_LIST_URL)
         assert res.status_code == 200
+
+    def test_admin_blocked(self, admin_client, message_from_vendor):
+        res = admin_client.get(CHAT_LIST_URL)
+        assert res.status_code == 403
+
+    def test_viewer_blocked(self, viewer_client, message_from_vendor):
+        res = viewer_client.get(CHAT_LIST_URL)
+        assert res.status_code == 403
 
     def test_unauthenticated_blocked(self, anon_client):
         assert anon_client.get(CHAT_LIST_URL).status_code == 401
@@ -190,6 +205,14 @@ class TestVendorMessagesView:
     def test_officer_can_get_messages(self, officer_client, vendor, message_from_vendor):
         res = officer_client.get(messages_url(vendor.id))
         assert res.status_code == 200
+
+    def test_admin_blocked(self, admin_client, vendor, message_from_vendor):
+        res = admin_client.get(messages_url(vendor.id))
+        assert res.status_code == 403
+
+    def test_viewer_blocked(self, viewer_client, vendor, message_from_vendor):
+        res = viewer_client.get(messages_url(vendor.id))
+        assert res.status_code == 403
 
     def test_unauthenticated_blocked(self, anon_client, vendor):
         assert anon_client.get(messages_url(vendor.id)).status_code == 401
@@ -246,6 +269,10 @@ class TestSendChatInviteView:
         res = viewer_client.post(INVITE_URL, {"vendor_id": str(vendor.id)}, format="json")
         assert res.status_code == 403
 
+    def test_admin_cannot_send_invite(self, admin_client, vendor):
+        res = admin_client.post(INVITE_URL, {"vendor_id": str(vendor.id)}, format="json")
+        assert res.status_code == 403
+
     def test_unauthenticated_blocked(self, anon_client, vendor):
         assert anon_client.post(INVITE_URL, {"vendor_id": str(vendor.id)}, format="json").status_code == 401
 
@@ -278,6 +305,10 @@ class TestRevokeChatTokenView:
         assert res.status_code == 200
         chat_token.refresh_from_db()
         assert chat_token.is_revoked is True
+
+    def test_admin_blocked(self, admin_client, chat_token):
+        res = admin_client.post(revoke_url(chat_token.id))
+        assert res.status_code == 403
 
     def test_revoked_token_is_no_longer_valid(self, officer_client, chat_token):
         officer_client.post(revoke_url(chat_token.id))
@@ -393,6 +424,17 @@ class TestVerifyOtpView:
         assert "vendor_id" in res.data
         assert "vendor_name" in res.data
 
+    def test_blocks_after_rate_exceeded(self, anon_client, chat_token):
+        for _ in range(5):
+            res = anon_client.post(VERIFY_OTP_URL, {
+                "token": str(chat_token.token), "otp_code": "000000",
+            }, format="json")
+            assert res.status_code == 400
+        res = anon_client.post(VERIFY_OTP_URL, {
+            "token": str(chat_token.token), "otp_code": "000000",
+        }, format="json")
+        assert res.status_code == 429
+
 
 @pytest.mark.django_db
 class TestSendChatInvitation:
@@ -417,6 +459,41 @@ class TestSendChatInvitation:
             result = send_chat_invitation(chat_token)
         assert result is False
 
+
+@pytest.mark.django_db
+class TestMessageSerializer:
+
+    def test_valid_content_passes(self, vendor):
+        from communication.serializers import MessageSerializer
+        s = MessageSerializer(data={
+            "vendor": str(vendor.id), "message_type": "vendor_message", "content": "Hello",
+        })
+        assert s.is_valid(), s.errors
+
+    def test_empty_content_rejected(self, vendor):
+        from communication.serializers import MessageSerializer
+        s = MessageSerializer(data={
+            "vendor": str(vendor.id), "message_type": "vendor_message", "content": "   ",
+        })
+        assert not s.is_valid()
+        assert "content" in s.errors
+
+    def test_oversized_content_rejected(self, vendor):
+        from communication.serializers import MessageSerializer
+        s = MessageSerializer(data={
+            "vendor": str(vendor.id), "message_type": "vendor_message",
+            "content": "x" * 5001,
+        })
+        assert not s.is_valid()
+        assert "content" in s.errors
+
+    def test_max_length_content_accepted(self, vendor):
+        from communication.serializers import MessageSerializer
+        s = MessageSerializer(data={
+            "vendor": str(vendor.id), "message_type": "vendor_message",
+            "content": "x" * 5000,
+        })
+        assert s.is_valid(), s.errors
 
 
 @pytest.mark.django_db
@@ -476,3 +553,40 @@ class TestChatConsumerHelpers:
             str(uuid.uuid4()), officer_user
         )
         assert result is False
+
+
+@pytest.mark.django_db
+class TestChatConsumerRoleGate:
+
+    def test_get_user_from_jwt_resolves_officer(self, officer_user):
+        from communication.consumers import ChatConsumer
+        from asgiref.sync import async_to_sync
+        from rest_framework_simplejwt.tokens import AccessToken
+
+        token = str(AccessToken.for_user(officer_user))
+        consumer = ChatConsumer()
+        user = async_to_sync(consumer._get_user_from_jwt)(token)
+        assert user is not None
+        assert user.role == "officer"
+
+    def test_get_user_from_jwt_resolves_admin(self, admin_user):
+        from communication.consumers import ChatConsumer
+        from asgiref.sync import async_to_sync
+        from rest_framework_simplejwt.tokens import AccessToken
+
+        token = str(AccessToken.for_user(admin_user))
+        consumer = ChatConsumer()
+        user = async_to_sync(consumer._get_user_from_jwt)(token)
+        assert user is not None
+        assert user.role == "admin"
+
+    def test_get_user_from_jwt_resolves_viewer(self, viewer_user):
+        from communication.consumers import ChatConsumer
+        from asgiref.sync import async_to_sync
+        from rest_framework_simplejwt.tokens import AccessToken
+
+        token = str(AccessToken.for_user(viewer_user))
+        consumer = ChatConsumer()
+        user = async_to_sync(consumer._get_user_from_jwt)(token)
+        assert user is not None
+        assert user.role == "viewer"

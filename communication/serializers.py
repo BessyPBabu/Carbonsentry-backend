@@ -7,6 +7,8 @@ from .models import ChatToken, Message
 logger = logging.getLogger(__name__)
 
 
+MAX_MESSAGE_LENGTH = 5000
+
 class MessageSerializer(serializers.ModelSerializer):
     sender_name = serializers.SerializerMethodField()
 
@@ -18,6 +20,15 @@ class MessageSerializer(serializers.ModelSerializer):
             'content', 'is_read', 'created_at',
         ]
         read_only_fields = ['id', 'created_at', 'sender', 'sender_type', 'vendor_sender_name']
+
+    def validate_content(self, value):
+        if not value or not value.strip():
+            raise serializers.ValidationError("Message content cannot be empty")
+        if len(value) > MAX_MESSAGE_LENGTH:
+            raise serializers.ValidationError(
+                f"Message cannot exceed {MAX_MESSAGE_LENGTH} characters"
+            )
+        return value
 
     def get_sender_name(self, obj):
         if obj.sender_type == 'officer' and obj.sender:

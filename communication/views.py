@@ -1,10 +1,12 @@
 import logging
+import hmac
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.pagination import PageNumberPagination
 
+from accounts.permissions import IsOfficer
 from .models import ChatToken, Message
 from .serializers import (
     ChatTokenSerializer,
@@ -13,6 +15,7 @@ from .serializers import (
     SendChatInviteSerializer,
     VerifyOtpSerializer,
 )
+from accounts.throttling import OtpVerifyRateThrottle
 from .services import send_chat_invitation
 
 logger = logging.getLogger(__name__)
@@ -25,7 +28,7 @@ class MessagePagination(PageNumberPagination):
 
 
 class ChatVendorListView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsOfficer]
 
     def get(self, request):
         try:
@@ -86,7 +89,7 @@ class ChatVendorListView(APIView):
 
 
 class VendorMessagesView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsOfficer]
 
     def get(self, request, vendor_id):
         try:
@@ -127,17 +130,13 @@ class VendorMessagesView(APIView):
             )
 
 
+# NEW
 class SendChatInviteView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsOfficer]
 
     def post(self, request):
-        if request.user.role not in ("officer", "admin"):
-            return Response(
-                {"error": "Only officers and admins can send chat invitations."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
         serializer = SendChatInviteSerializer(data=request.data)
+
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -197,7 +196,7 @@ class SendChatInviteView(APIView):
 
 
 class RevokeChatTokenView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsOfficer]
 
     def post(self, request, token_id):
         try:
@@ -254,8 +253,10 @@ class VendorChatTokenValidateView(APIView):
             )
 
 
+# NEW
 class VerifyOtpView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes   = [OtpVerifyRateThrottle]
 
     def post(self, request):
         serializer = VerifyOtpSerializer(data=request.data)
@@ -283,7 +284,7 @@ class VerifyOtpView(APIView):
                     "vendor_name": chat_token.vendor.name,
                 })
 
-            if chat_token.otp_code != otp_code:
+            if not hmac.compare_digest(chat_token.otp_code, otp_code):
                 logger.warning("VerifyOtpView: wrong OTP | token=%s", token_value)
                 return Response(
                     {"success": False, "reason": "Incorrect verification code. Please check your email."},

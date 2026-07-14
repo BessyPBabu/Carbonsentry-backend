@@ -7,6 +7,8 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 
 logger = logging.getLogger(__name__)
 
+MAX_MESSAGE_LENGTH = 5000
+
 
 class ChatConsumer(AsyncWebsocketConsumer):
 
@@ -31,6 +33,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
             if not user:
                 logger.warning("ChatConsumer: invalid JWT on connect | vendor=%s", self.vendor_id)
                 await self.close(code=4001)
+                return
+
+            if getattr(user, 'role', None) != 'officer':
+                logger.warning(
+                    "ChatConsumer: non-officer role denied | user=%s role=%s vendor=%s",
+                    user.id, getattr(user, 'role', None), self.vendor_id
+                )
+                await self.close(code=4004)
                 return
 
             vendor_ok = await self._vendor_belongs_to_org(self.vendor_id, user)
@@ -98,7 +108,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if not content:
             return
 
-        
+        if len(content) > MAX_MESSAGE_LENGTH:
+            logger.warning(
+                "ChatConsumer: message exceeds max length | vendor=%s len=%d",
+                self.vendor_id, len(content)
+            )
+            return
+
         if message_type == 'internal_note' and self.sender_type != 'officer':
             logger.warning("ChatConsumer: vendor tried to send internal note — blocked")
             return

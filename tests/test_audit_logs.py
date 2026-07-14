@@ -1,5 +1,6 @@
 import uuid
 import pytest
+from django.core.cache import cache
 from audit_logs.models import AuditLog
 from audit_logs.services import log_action
 from vendors.models import Vendor, Industry
@@ -7,6 +8,13 @@ from vendors.models import Vendor, Industry
 AUDIT_LOG_URL    = "/api/audit_logs/"
 EXPORT_CSV_URL   = "/api/audit_logs/export_csv/"
 ACTION_LIST_URL  = "/api/audit_logs/action_choices/"
+
+
+@pytest.fixture(autouse=True)
+def clear_cache():
+    cache.clear()
+    yield
+    cache.clear()
 
 
 @pytest.fixture
@@ -147,7 +155,6 @@ class TestLogAction:
         assert log.ip_address == "10.0.0.1"
 
 
-
 @pytest.mark.django_db
 class TestAuditLogViewSet:
 
@@ -173,7 +180,7 @@ class TestAuditLogViewSet:
 
     def test_org_isolation(self, admin_client, verified_org):
         from accounts.utils.email_verification import generate_verification_token, hash_token
-        from accounts.models import Organization, User
+        from accounts.models import Organization
         other_org = Organization.objects.create(
             name="Other Corp", industry="Tech", country="India",
             primary_email="other@other.com", is_verified=True,
@@ -205,6 +212,14 @@ class TestAuditLogViewSet:
         yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
         res = admin_client.get(AUDIT_LOG_URL, {"date_from": yesterday})
         assert res.status_code == 200
+
+    def test_invalid_date_from_returns_400_not_500(self, admin_client, audit_log):
+        res = admin_client.get(AUDIT_LOG_URL, {"date_from": "not-a-date"})
+        assert res.status_code == 400
+
+    def test_invalid_date_to_returns_400_not_500(self, admin_client, audit_log):
+        res = admin_client.get(AUDIT_LOG_URL, {"date_to": "banana"})
+        assert res.status_code == 400
 
     def test_response_includes_actor_name(self, admin_client, audit_log):
         res = admin_client.get(AUDIT_LOG_URL)
@@ -254,6 +269,19 @@ class TestAuditLogCsvExport:
         content = res.content.decode("utf-8")
         assert "vendor_created" in content.lower() or "Vendor Created" in content
 
+    def test_formula_injection_prefix_neutralized(self, admin_client, verified_org):
+        AuditLog.objects.create(
+            organization=verified_org,
+            actor=None,
+            action="vendor_created",
+            entity_type="Vendor",
+            entity_id="=cmd|'/c calc'!A1",
+            details={},
+        )
+        res = admin_client.get(EXPORT_CSV_URL)
+        content = res.content.decode("utf-8")
+        assert "'=cmd" in content
+
     def test_unauthenticated_blocked(self, anon_client):
         assert anon_client.get(EXPORT_CSV_URL).status_code == 401
 
@@ -277,7 +305,6 @@ class TestActionChoices:
         res = admin_client.get(ACTION_LIST_URL)
         values = [c["value"] for c in res.data]
         assert "vendor_created" in values
-
 
 
 @pytest.mark.django_db
