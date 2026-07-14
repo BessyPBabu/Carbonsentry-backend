@@ -1,28 +1,12 @@
 import io
 import logging
 from decimal import Decimal
+from xml.sax.saxutils import escape as _xml_escape
 from django.db.models import Avg, Count, Q, Sum
 
+from reports.compliance_engine import generate_vendor_compliance_report
+
 logger = logging.getLogger(__name__)
-
-# ── EU CBAM applicable industries ────────────────────────────────────────────
-_CBAM_INDUSTRIES = {'steel', 'iron', 'aluminium', 'aluminum', 'cement', 'fertilizer',
-                    'fertilizers', 'electricity', 'hydrogen', 'energy'}
-
-# ── SEBI BRSR Core: applies to Scope 3 supply chain of top-1000 listed companies
-_SEBI_INDUSTRIES = {'manufacturing', 'energy', 'logistics', 'steel', 'cement',
-                    'chemicals', 'construction', 'mining', 'textiles', 'auto',
-                    'automotive', 'it services', 'technology', 'fmcg', 'retail',
-                    'healthcare', 'pharmaceuticals'}
-
-# ── NGT penalty base (India operations) ──────────────────────────────────────
-_NGT_BASE_PENALTY_INR = 1_900_000  # ₹1.9 Crore maximum per NGT ruling
-
-# ── EU ETS carbon price estimate (EUR per tonne CO2) ─────────────────────────
-_EU_ETS_PRICE_EUR = 65.0
-
-# ── INR/EUR rough rate ────────────────────────────────────────────────────────
-_INR_PER_EUR = 90.0
 
 
 def _sanitize_for_json(obj):
@@ -33,20 +17,6 @@ def _sanitize_for_json(obj):
     if isinstance(obj, Decimal):
         return float(obj)
     return obj
-
-
-def _cbam_applicable(industry_name: str) -> bool:
-    return industry_name.lower().strip() in _CBAM_INDUSTRIES
-
-
-def _sebi_applicable(industry_name: str) -> bool:
-    return industry_name.lower().strip() in _SEBI_INDUSTRIES
-
-
-def _reasonable_assurance_met(confidence: float) -> bool:
-    # Maps to SEBI BRSR "reasonable assurance" — we treat >= 75% AI confidence
-    # as equivalent to third-party limited assurance on the document.
-    return confidence >= 75.0
 
 
 class ReportGenerator:
@@ -81,212 +51,22 @@ class ReportGenerator:
             logger.exception("report.generate_failed | type=%s org=%s", report_type, organization.id)
             raise
 
-    # ── Vendor Compliance Report (new — SEBI BRSR + EU CBAM + NGT) ───────────
+    # ── Vendor Compliance Report  ───────────
 
     def _generate_vendor_compliance_report(self, organization, vendor, date_from=None, date_to=None):
         if not vendor:
             raise ValueError("vendor is required for vendor_compliance_report")
 
-        from vendors.models import Document
-        from ai_validation.models import VendorRiskProfile, DocumentValidation, ExtractedMetadata
-
-        industry_name = vendor.industry.name if vendor.industry else ''
-        country       = (vendor.country or '').lower()
-
-        # ── Regulatory applicability ──────────────────────────────────────────
-        is_indian   = any(k in country for k in ('india', 'in'))
-        cbam_applies = _cbam_applicable(industry_name)
-        sebi_applies = _sebi_applicable(industry_name)
-        ngt_applies  = is_indian
-
-        applicable_regulations = []
-        if sebi_applies:
-            applicable_regulations.append({
-                'regulation': 'SEBI BRSR Core',
-                'requirement': 'Reasonable assurance on Scope 1, 2 & 3 emissions',
-                'deadline': 'FY 2024-25 onwards',
-                'applies_because': f'{industry_name} is a Scope 3 supply-chain category',
-            })
-        if cbam_applies:
-            applicable_regulations.append({
-                'regulation': 'EU CBAM',
-                'requirement': 'Embedded carbon declaration for EU-bound goods',
-                'deadline': 'Phased from 2026',
-                'applies_because': f'{industry_name} is a CBAM-covered sector',
-            })
-        if ngt_applies:
-            applicable_regulations.append({
-                'regulation': 'NGT (India)',
-                'requirement': 'Emission monitoring with documented verification',
-                'deadline': 'Active enforcement',
-                'applies_because': 'Vendor operates in India',
-            })
-        if not applicable_regulations:
-            applicable_regulations.append({
-                'regulation': 'General voluntary disclosure',
-                'requirement': 'GHG Protocol Corporate Standard',
-                'deadline': 'N/A',
-                'applies_because': 'No mandatory regulation identified for this sector/country',
-            })
-
-        # ── Document verification status ──────────────────────────────────────
-        docs = Document.objects.filter(vendor=vendor).select_related('document_type')
-        validations = DocumentValidation.objects.filter(
-            document__vendor=vendor
-        ).select_related('metadata')
-
-        total_docs    = docs.count()
-        valid_docs    = docs.filter(status='valid').count()
-        flagged_docs  = docs.filter(status='flagged').count()
-        invalid_docs  = docs.filter(status='invalid').count()
-        pending_docs  = docs.filter(status='pending').count()
-        expired_docs  = docs.filter(status='expired').count()
-
-        avg_conf_agg = validations.aggregate(avg=Avg('overall_confidence'))
-        avg_confidence = float(avg_conf_agg['avg'] or 0)
-
-        reasonable_assurance_met = _reasonable_assurance_met(avg_confidence)
-
-        doc_status_list = []
-        for doc in docs.prefetch_related('validation', 'validation__metadata'):
-            v = getattr(doc, 'validation', None)
-            confidence = float(v.overall_confidence) if v and v.overall_confidence else None
-            meta = getattr(v, 'metadata', None) if v else None
-            doc_status_list.append({
-                'document_type':  doc.document_type.name,
-                'status':         doc.status,
-                'confidence':     confidence,
-                'expiry_date':    str(doc.expiry_date) if doc.expiry_date else None,
-                'co2_extracted':  float(meta.co2_value) if meta and meta.co2_value else None,
-                'co2_unit':       meta.co2_unit if meta else None,
-                'issuing_authority': meta.issuing_authority if meta else None,
-                'cert_number':    meta.certificate_number if meta else None,
-                'verification_standard': meta.verification_standard if meta else None,
-                'assurance_met':  _reasonable_assurance_met(confidence) if confidence else False,
-            })
-
-        # ── Scope emissions breakdown ─────────────────────────────────────────
         try:
-            risk_profile = VendorRiskProfile.objects.get(vendor=vendor)
-            total_co2    = float(risk_profile.total_co2_emissions or 0)
-            risk_level   = risk_profile.risk_level
-            risk_score   = float(risk_profile.risk_score or 0)
-            exceeds_threshold = risk_profile.exceeds_threshold
-        except VendorRiskProfile.DoesNotExist:
-            total_co2   = 0.0
-            risk_level  = 'unknown'
-            risk_score  = 0.0
-            exceeds_threshold = False
+            return generate_vendor_compliance_report(vendor, organization)
+        except Exception:
+            logger.exception(
+                "report.vendor_compliance_report_failed | vendor=%s org=%s",
+                vendor.id, organization.id,
+            )
+            raise
 
-        # ── Regulatory risk exposure ──────────────────────────────────────────
-        regulatory_exposure = []
-
-        if sebi_applies:
-            assurance_gap = not reasonable_assurance_met
-            regulatory_exposure.append({
-                'regulation': 'SEBI BRSR Core',
-                'status': 'non_compliant' if assurance_gap else 'compliant',
-                'gap': 'AI confidence below 75% — reasonable assurance not met' if assurance_gap else None,
-                'risk': 'Regulatory audit finding / stock exchange disclosure risk' if assurance_gap else None,
-            })
-
-        if cbam_applies and total_co2 > 0:
-            cbam_cost_eur = total_co2 * _EU_ETS_PRICE_EUR
-            cbam_cost_inr = cbam_cost_eur * _INR_PER_EUR
-            regulatory_exposure.append({
-                'regulation': 'EU CBAM',
-                'status': 'exposure_calculated',
-                'estimated_carbon_cost_eur': round(cbam_cost_eur, 2),
-                'estimated_carbon_cost_inr': round(cbam_cost_inr, 2),
-                'basis': f'{total_co2:.2f} tCO2e × EUR {_EU_ETS_PRICE_EUR} ETS price',
-                'risk': 'Carbon tariff payable on EU exports' if cbam_applies else None,
-            })
-
-        if ngt_applies:
-            has_monitoring_failure = invalid_docs > 0 or (total_docs > 0 and valid_docs == 0)
-            regulatory_exposure.append({
-                'regulation': 'NGT (India)',
-                'status': 'at_risk' if has_monitoring_failure else 'compliant',
-                'max_penalty_inr': _NGT_BASE_PENALTY_INR if has_monitoring_failure else 0,
-                'max_penalty_display': '₹1.9 Crore' if has_monitoring_failure else '₹0',
-                'risk': 'Penalty for emission monitoring failure' if has_monitoring_failure else None,
-            })
-
-        # ── Compliance gap analysis ───────────────────────────────────────────
-        gaps = []
-        if pending_docs > 0:
-            gaps.append(f'{pending_docs} document(s) not yet submitted by vendor')
-        if invalid_docs > 0:
-            gaps.append(f'{invalid_docs} document(s) failed AI validation and rejected')
-        if expired_docs > 0:
-            gaps.append(f'{expired_docs} certificate(s) expired — renewal required')
-        if flagged_docs > 0:
-            gaps.append(f'{flagged_docs} document(s) flagged and pending human review')
-        if not reasonable_assurance_met and avg_confidence > 0:
-            gaps.append(f'Average AI confidence {avg_confidence:.1f}% is below the 75% reasonable assurance threshold')
-        if total_co2 == 0:
-            gaps.append('No CO2 emission data extracted — extraction may have failed or documents lack numeric emission values')
-        if exceeds_threshold:
-            gaps.append('Total emissions exceed industry threshold — vendor is classified as high/critical risk')
-
-        # ── Recommendations ───────────────────────────────────────────────────
-        recommendations = []
-        if pending_docs > 0:
-            recommendations.append('Request immediate document submission via resend link')
-        if invalid_docs > 0:
-            recommendations.append('Contact vendor to resubmit rejected documents with correct format and all required fields')
-        if expired_docs > 0:
-            recommendations.append('Issue renewal request for expired certificates')
-        if not reasonable_assurance_met:
-            recommendations.append('Request higher-quality document scans or certified originals to improve AI extraction confidence')
-        if total_co2 == 0:
-            recommendations.append('Request emission report with explicit total CO2e value clearly labelled in the document')
-        if cbam_applies and total_co2 > 0:
-            recommendations.append(f'Budget for EU CBAM carbon cost of approximately EUR {total_co2 * _EU_ETS_PRICE_EUR:,.0f} on EU exports')
-        if exceeds_threshold:
-            recommendations.append('Engage vendor on emission reduction plan — consider supply chain substitution for critical risk vendors')
-        if not recommendations:
-            recommendations.append('Maintain current monitoring schedule — vendor is in good standing')
-
-        return {
-            'vendor': {
-                'id':                str(vendor.id),
-                'name':              vendor.name,
-                'industry':          industry_name,
-                'country':           vendor.country,
-                'compliance_status': vendor.compliance_status,
-                'risk_level':        risk_level,
-            },
-            'regulatory_applicability': applicable_regulations,
-            'emission_verification': {
-                'total_documents':          total_docs,
-                'valid_documents':          valid_docs,
-                'flagged_documents':        flagged_docs,
-                'invalid_documents':        invalid_docs,
-                'pending_documents':        pending_docs,
-                'expired_documents':        expired_docs,
-                'average_ai_confidence':    round(avg_confidence, 1),
-                'reasonable_assurance_met': reasonable_assurance_met,
-                'assurance_threshold':      75.0,
-                'document_details':         doc_status_list,
-            },
-            'scope_emissions': {
-                'total_co2_tonnes':   total_co2,
-                'unit':               'tonnes CO2e',
-                'risk_score':         risk_score,
-                'risk_level':         risk_level,
-                'exceeds_threshold':  exceeds_threshold,
-                'note': (
-                    'Scope breakdown extracted from vendor documents. '
-                    'Scope 1/2/3 split visible in individual document records.'
-                ),
-            },
-            'compliance_gap_analysis': gaps,
-            'regulatory_risk_exposure': regulatory_exposure,
-            'recommendations': recommendations,
-        }
-
-    # ── Existing report types (unchanged logic, kept for completeness) ────────
+    # ── Existing report types  ────────
 
     def _generate_vendor_risk(self, organization, vendor, date_from=None, date_to=None):
         from vendors.models import Document
@@ -505,7 +285,7 @@ class ReportGenerator:
         }
 
 
-# ── PDF Exporter (unchanged from original, + vendor_compliance_report section) ──
+# ── PDF Exporter ──
 
 class PDFExporter:
 
@@ -556,10 +336,10 @@ class PDFExporter:
 
         elements = [
             Spacer(1, 30*mm),
-            Paragraph(report.title, title_style),
+            Paragraph(_xml_escape(report.title), title_style),
             Spacer(1, 4*mm),
-            Paragraph(self._report_type_label(report.report_type), sub_style),
-            Paragraph(f"Generated by {generated_by} on {generated_str}", sub_style),
+            Paragraph(_xml_escape(self._report_type_label(report.report_type)), sub_style),
+            Paragraph(_xml_escape(f"Generated by {generated_by} on {generated_str}"), sub_style),
             Spacer(1, 6*mm),
             HRFlowable(width='100%', thickness=1, color=self._rl_color(self.BRAND_GREEN)),
             Spacer(1, 10*mm),
@@ -570,7 +350,7 @@ class PDFExporter:
             approver     = report.approved_by.full_name or report.approved_by.email
             ap_style     = ParagraphStyle('Ap', fontSize=10, fontName='Helvetica',
                                           textColor=self._rl_color((0.1, 0.6, 0.3)), alignment=TA_CENTER)
-            elements.append(Paragraph(f"Approved by {approver} on {approved_str}", ap_style))
+            elements.append(Paragraph(_xml_escape(f"Approved by {approver} on {approved_str}"), ap_style))
             elements.append(Spacer(1, 6*mm))
 
         return elements
@@ -663,10 +443,60 @@ class PDFExporter:
             elements += self._section_heading("Compliance Gaps")
             elements += self._bullet_list(gaps)
 
+        
         recs = data.get('recommendations', [])
         if recs:
             elements += self._section_heading("Recommendations")
             elements += self._bullet_list(recs)
+
+        roadmap = data.get('reduction_roadmap')
+        if roadmap:
+            elements += self._section_heading("CO2 Reduction Roadmap")
+            elements += self._kv_table([
+                ("Current Emissions",   f"{roadmap.get('current_emissions_tco2e', 0):,.2f} tCO2e"),
+                ("Target Emissions",    f"{roadmap.get('target_emissions_tco2e', 0):,.2f} tCO2e"),
+                ("Reduction Needed",    f"{roadmap.get('reduction_needed_tco2e', 0):,.2f} tCO2e "
+                                        f"({roadmap.get('reduction_needed_pct', 0)}%)"),
+            ])
+            strategies = roadmap.get('strategies', [])
+            if strategies:
+                headers = ["Strategy", "Typical Reduction", "Timeframe", "Cost"]
+                rows = [
+                    [s['strategy'], f"{s['typical_reduction_pct']}%", s['timeframe'], s['cost_level']]
+                    for s in strategies
+                ]
+                elements += self._data_table(headers, rows)
+
+        credit = data.get('carbon_credit_guidance')
+        if credit:
+            elements += self._section_heading("Carbon Credit Guidance")
+            elements += self._kv_table([
+                ("Credits Needed",       f"{credit.get('credits_needed_tco2e', 0):,.2f} tCO2e"),
+                ("Estimated Cost (USD)", f"${credit.get('estimated_cost_usd_low', 0):,.0f} - "
+                                         f"${credit.get('estimated_cost_usd_high', 0):,.0f}"),
+                ("Estimated Cost (INR)", f"INR {credit.get('estimated_cost_inr_low', 0):,.0f} - "
+                                         f"INR {credit.get('estimated_cost_inr_high', 0):,.0f}"),
+            ])
+
+        retention = data.get('vendor_retention')
+        if retention:
+            elements += self._section_heading("Vendor Retention Recommendation")
+            elements += self._kv_table([
+                ("Recommendation",   retention.get('recommendation', '—').replace('_', ' ').title()),
+                ("Reason",           retention.get('reason', '—')),
+                ("Confidence Level", retention.get('confidence_level', '—').title()),
+                ("Review Date",      retention.get('review_date', '—')),
+            ])
+
+        actions = data.get('action_checklist')
+        if actions:
+            elements += self._section_heading("Action Checklist")
+            headers = ["#", "Action", "Owner", "Urgency"]
+            rows = [
+                [str(a['priority']), a['action'], a['owner'], a['urgency'].title()]
+                for a in actions
+            ]
+            elements += self._data_table(headers, rows)
 
         return elements
 

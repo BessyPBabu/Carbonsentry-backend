@@ -6,7 +6,7 @@ from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-
+from accounts.permissions import IsAdminOrOfficer
 from .models import Report
 from .serializers import ApproveReportSerializer, GenerateReportSerializer, ReportSerializer
 from .services import PDFExporter, ReportGenerator
@@ -18,6 +18,14 @@ class ReportViewSet(viewsets.ModelViewSet):
     serializer_class   = ReportSerializer
     permission_classes = [IsAuthenticated]
     http_method_names  = ["get", "post", "patch", "delete", "head", "options"]
+
+    def get_permissions(self):
+        write_actions = (
+            "update", "partial_update", "destroy", "generate", "approve",
+        )
+        if self.action in write_actions:
+            return [IsAuthenticated(), IsAdminOrOfficer()]
+        return [IsAuthenticated()]
 
     def get_queryset(self):
         user = self.request.user
@@ -67,12 +75,6 @@ class ReportViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["post"], url_path="generate")
     def generate(self, request):
         from audit_logs.services import log_action
-
-        if request.user.role == "viewer":
-            return Response(
-                {"error": "Viewers cannot generate reports."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
 
         serializer = GenerateReportSerializer(data=request.data)
         if not serializer.is_valid():
@@ -156,12 +158,6 @@ class ReportViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["patch"], url_path="approve")
     def approve(self, request, pk=None):
         from audit_logs.services import log_action
-
-        if request.user.role not in ("officer", "admin"):
-            return Response(
-                {"error": "Only officers and admins can approve reports."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
 
         report = self.get_object()
 

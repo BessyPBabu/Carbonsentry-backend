@@ -111,6 +111,10 @@ class TestReportViewSet:
     def test_unauthenticated_blocked(self, anon_client):
         assert anon_client.get(REPORTS_URL).status_code == 401
 
+    def test_viewer_can_list_reports(self, viewer_client, approved_report):
+        res = viewer_client.get(REPORTS_URL)
+        assert res.status_code == 200
+
     def test_pagination_structure(self, officer_client, generated_report):
         res = officer_client.get(REPORTS_URL)
         assert "count" in res.data
@@ -173,6 +177,21 @@ class TestReportViewSet:
         res = officer_client.delete(detail_url(draft_report.id))
         assert res.status_code == 204
 
+    def test_viewer_cannot_delete_draft_report(self, viewer_client, draft_report):
+        res = viewer_client.delete(detail_url(draft_report.id))
+        assert res.status_code == 403
+        assert Report.objects.filter(id=draft_report.id).exists()
+
+    def test_viewer_cannot_update_report(self, viewer_client, approved_report):
+        res = viewer_client.patch(detail_url(approved_report.id), {"title": "Hacked"}, format="json")
+        assert res.status_code == 403
+
+    def test_officer_can_update_draft_report(self, officer_client, draft_report):
+        res = officer_client.patch(detail_url(draft_report.id), {"title": "Updated Title"}, format="json")
+        assert res.status_code == 200
+        draft_report.refresh_from_db()
+        assert draft_report.title == "Updated Title"
+
     def test_generated_by_name_in_response(self, officer_client, generated_report, officer_user):
         officer_user.full_name = "Officer User"
         officer_user.save()
@@ -180,7 +199,6 @@ class TestReportViewSet:
         results = res.data.get("results", [])
         assert len(results) >= 1
         assert results[0]["generated_by_name"] is not None
-
 
 
 @pytest.mark.django_db
@@ -195,6 +213,15 @@ class TestGenerateReport:
         }, format="json")
         assert res.status_code == 201
         assert Report.objects.filter(title="Test Report").exists()
+
+    @patch("reports.views.ReportGenerator")
+    def test_admin_can_generate_report(self, MockGen, admin_client):
+        MockGen.return_value.generate.return_value = {"summary": {}}
+        res = admin_client.post(GENERATE_URL, {
+            "report_type": "compliance_summary",
+            "title": "Admin Report",
+        }, format="json")
+        assert res.status_code == 201
 
     @patch("reports.views.ReportGenerator")
     def test_generated_report_has_status_generated(self, MockGen, officer_client):
@@ -267,6 +294,30 @@ class TestGenerateReport:
             "report_type": "compliance_summary", "title": "x"
         }, format="json").status_code == 401
 
+   
+    @patch("reports.services.generate_vendor_compliance_report")
+    def test_vendor_compliance_report_delegates_to_compliance_engine(self, mock_engine, officer_client, vendor):
+        mock_engine.return_value = {
+            "vendor": {"name": vendor.name},
+            "regulatory_applicability": [],
+            "emission_verification": {},
+            "scope_emissions": {},
+            "regulatory_risk_exposure": [],
+            "compliance_gap_analysis": [],
+            "reduction_roadmap": None,
+            "carbon_credit_guidance": None,
+            "vendor_retention": {"recommendation": "retain"},
+            "action_checklist": [],
+        }
+        res = officer_client.post(GENERATE_URL, {
+            "report_type": "vendor_compliance_report",
+            "title": "Compliance Engine Test",
+            "vendor_id": str(vendor.id),
+        }, format="json")
+        assert res.status_code == 201
+        mock_engine.assert_called_once()
+        report = Report.objects.get(title="Compliance Engine Test")
+        assert report.data["vendor_retention"]["recommendation"] == "retain"
 
 
 @pytest.mark.django_db
@@ -277,6 +328,10 @@ class TestApproveReport:
         assert res.status_code == 200
         generated_report.refresh_from_db()
         assert generated_report.status == "approved"
+
+    def test_admin_can_approve_generated_report(self, admin_client, generated_report):
+        res = admin_client.patch(approve_url(generated_report.id), {}, format="json")
+        assert res.status_code == 200
 
     def test_approval_sets_approved_by(self, officer_client, generated_report, officer_user):
         officer_client.patch(approve_url(generated_report.id), {}, format="json")
@@ -335,7 +390,6 @@ class TestDownloadPdf:
         assert res.status_code == 200
 
     def test_viewer_cannot_download_unapproved_report(self, viewer_client, generated_report):
-        
         res = viewer_client.get(download_url(generated_report.id))
         assert res.status_code in (403, 404)
 
@@ -351,7 +405,6 @@ class TestDownloadPdf:
 
     def test_unauthenticated_blocked(self, anon_client, generated_report):
         assert anon_client.get(download_url(generated_report.id)).status_code == 401
-
 
 
 @pytest.mark.django_db
@@ -417,6 +470,50 @@ class TestReportGenerator:
         assert "documents" in data
         assert "recommendations" in data
 
+    def test_vendor_compliance_report_requires_vendor(self, verified_org):
+        from reports.services import ReportGenerator
+        with pytest.raises(ValueError, match="vendor is required"):
+            ReportGenerator().generate(
+                report_type="vendor_compliance_report",
+                organization=verified_org,
+                vendor=None,
+            )
+
+    def test_vendor_compliance_report_uses_compliance_engine(self, verified_org, vendor):
+        from reports.services import ReportGenerator
+        data = ReportGenerator().generate(
+            report_type="vendor_compliance_report",
+            organization=verified_org,
+            vendor=vendor,
+        )
+        assert "vendor" in data
+        assert "regulatory_applicability" in data
+        assert "emission_verification" in data
+        assert "scope_emissions" in data
+        assert "vendor_retention" in data
+        assert "action_checklist" in data
+        assert "recommendation" in data["vendor_retention"]
+
+    def test_vendor_compliance_report_has_reduction_fields_for_high_emissions(self, verified_org, vendor):
+        from reports.services import ReportGenerator
+        from ai_validation.models import VendorRiskProfile
+        VendorRiskProfile.objects.create(
+            vendor=vendor,
+            organization=verified_org,
+            risk_level="critical",
+            risk_score=Decimal("90"),
+            total_co2_emissions=Decimal("50000"),
+            exceeds_threshold=True,
+        )
+        data = ReportGenerator().generate(
+            report_type="vendor_compliance_report",
+            organization=verified_org,
+            vendor=vendor,
+        )
+        assert data["reduction_roadmap"] is not None
+        assert data["carbon_credit_guidance"] is not None
+        assert len(data["reduction_roadmap"]["strategies"]) > 0
+
     def test_no_decimal_values_in_output(self, verified_org):
         from reports.services import ReportGenerator
         from decimal import Decimal
@@ -448,3 +545,99 @@ class TestReportGenerator:
             date_to=datetime.date(2024, 12, 31),
         )
         assert "validation_summary" in data
+
+
+@pytest.mark.django_db
+class TestPDFExporterEscaping:
+
+    def test_ampersand_in_title_does_not_crash_export(self, verified_org, officer_user):
+        from reports.services import PDFExporter
+        report = Report.objects.create(
+            organization=verified_org,
+            report_type="compliance_summary",
+            title="Smith & Sons — Q1 Compliance",
+            generated_by=officer_user,
+            status="generated",
+            data={"summary": {"total_vendors": 1}, "vendors": []},
+        )
+        pdf_bytes = PDFExporter().export(report)
+        assert pdf_bytes.startswith(b"%PDF")
+
+    def test_angle_brackets_in_title_do_not_crash_export(self, verified_org, officer_user):
+        from reports.services import PDFExporter
+        report = Report.objects.create(
+            organization=verified_org,
+            report_type="compliance_summary",
+            title="<Test> Report",
+            generated_by=officer_user,
+            status="generated",
+            data={"summary": {"total_vendors": 1}, "vendors": []},
+        )
+        pdf_bytes = PDFExporter().export(report)
+        assert pdf_bytes.startswith(b"%PDF")
+
+    def test_ampersand_in_generator_name_does_not_crash_export(self, verified_org):
+        from reports.services import PDFExporter
+        from accounts.models import User
+        user = User.objects.create_user(
+            email="ampersand@test.com", password="Test@1234",
+            role=User.Role.OFFICER, organization=verified_org,
+            is_active=True, full_name="A & B Officer",
+        )
+        report = Report.objects.create(
+            organization=verified_org,
+            report_type="compliance_summary",
+            title="Normal Title",
+            generated_by=user,
+            status="generated",
+            data={"summary": {"total_vendors": 1}, "vendors": []},
+        )
+        pdf_bytes = PDFExporter().export(report)
+        assert pdf_bytes.startswith(b"%PDF")
+
+    def test_vendor_compliance_pdf_renders_new_sections(self, verified_org, vendor, officer_user):
+        from reports.services import PDFExporter
+        report = Report.objects.create(
+            organization=verified_org,
+            report_type="vendor_compliance_report",
+            title="Full Compliance Report",
+            vendor=vendor,
+            generated_by=officer_user,
+            status="generated",
+            data={
+                "vendor": {"name": vendor.name, "industry": "Manufacturing", "country": "India",
+                           "compliance_status": "pending", "risk_level": "critical"},
+                "regulatory_applicability": [],
+                "emission_verification": {"total_documents": 0, "valid_documents": 0,
+                                           "flagged_documents": 0, "invalid_documents": 0,
+                                           "expired_documents": 0, "average_ai_confidence": 0,
+                                           "reasonable_assurance_met": False, "document_details": []},
+                "scope_emissions": {"total_co2_tonnes": 50000, "risk_score": 90, "exceeds_threshold": True},
+                "regulatory_risk_exposure": [],
+                "compliance_gap_analysis": [],
+                "recommendations": ["Test recommendation"],
+                "reduction_roadmap": {
+                    "current_emissions_tco2e": 50000, "target_emissions_tco2e": 750,
+                    "reduction_needed_tco2e": 49250, "reduction_needed_pct": 98.5,
+                    "strategies": [{"strategy": "Switch to renewable energy",
+                                    "typical_reduction_pct": 40, "timeframe": "6-18 months",
+                                    "cost_level": "medium"}],
+                },
+                "carbon_credit_guidance": {
+                    "credits_needed_tco2e": 50000,
+                    "estimated_cost_usd_low": 250000, "estimated_cost_usd_high": 2500000,
+                    "estimated_cost_inr_low": 20000000, "estimated_cost_inr_high": 200000000,
+                },
+                "vendor_retention": {
+                    "recommendation": "review_for_replacement",
+                    "reason": "Critical emissions", "confidence_level": "high",
+                    "review_date": "Immediate",
+                },
+                "action_checklist": [
+                    {"priority": 1, "action": "Escalate to senior management",
+                     "owner": "Senior Management", "urgency": "critical"},
+                ],
+            },
+        )
+        pdf_bytes = PDFExporter().export(report)
+        assert pdf_bytes.startswith(b"%PDF")

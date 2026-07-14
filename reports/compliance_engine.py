@@ -115,12 +115,13 @@ def _emission_band(co2: float, industry: str) -> str:
 
 
 def generate_vendor_compliance_report(vendor, organization) -> dict:
-    """
-    Main entry point.
-    Returns a dict that is stored in Report.data and rendered by the frontend.
-    """
     from vendors.models import Document
     from ai_validation.models import VendorRiskProfile, DocumentValidation
+
+    logger.info(
+        "compliance_engine.generate | vendor=%s org=%s",
+        vendor.id, organization.id,
+    )
 
     industry_name = vendor.industry.name if vendor.industry else ''
     industry_key  = _industry_key(industry_name)
