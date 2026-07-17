@@ -4,6 +4,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.pagination import PageNumberPagination
+from accounts.throttling import OtpVerifyRateThrottle, TokenValidateRateThrottle
 
 from .models import ChatToken, Message
 from .serializers import (
@@ -227,6 +228,7 @@ class RevokeChatTokenView(APIView):
 
 class VendorChatTokenValidateView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [TokenValidateRateThrottle]
 
     def get(self, request, token):
         try:
@@ -253,9 +255,11 @@ class VendorChatTokenValidateView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-
 class VerifyOtpView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [OtpVerifyRateThrottle]
+
+    MAX_OTP_ATTEMPTS = 5
 
     def post(self, request):
         serializer = VerifyOtpSerializer(data=request.data)
@@ -270,9 +274,20 @@ class VerifyOtpView(APIView):
                 token=token_value
             )
 
-            if not chat_token.is_valid:
+            if not chat_token.otp_verified and chat_token.otp_attempts >= self.MAX_OTP_ATTEMPTS:
                 return Response(
-                    {"success": False, "reason": "This chat link has expired or been revoked."},
+                    {"success": False, "reason": "Too many incorrect attempts. This chat link has been locked."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if not chat_token.is_valid:
+                reason = (
+                    "This chat link has been locked due to too many incorrect attempts."
+                    if chat_token.is_revoked and chat_token.otp_attempts >= self.MAX_OTP_ATTEMPTS
+                    else "This chat link has expired or been revoked."
+                )
+                return Response(
+                    {"success": False, "reason": reason},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
@@ -284,7 +299,22 @@ class VerifyOtpView(APIView):
                 })
 
             if chat_token.otp_code != otp_code:
-                logger.warning("VerifyOtpView: wrong OTP | token=%s", token_value)
+                chat_token.otp_attempts += 1
+                update_fields = ["otp_attempts"]
+
+                if chat_token.otp_attempts >= self.MAX_OTP_ATTEMPTS:
+                    chat_token.is_revoked = True
+                    update_fields.append("is_revoked")
+                    logger.warning(
+                        "VerifyOtpView: token locked after max attempts | token=%s", token_value
+                    )
+
+                chat_token.save(update_fields=update_fields)
+
+                logger.warning(
+                    "VerifyOtpView: wrong OTP | token=%s attempts=%d",
+                    token_value, chat_token.otp_attempts,
+                )
                 return Response(
                     {"success": False, "reason": "Incorrect verification code. Please check your email."},
                     status=status.HTTP_400_BAD_REQUEST,

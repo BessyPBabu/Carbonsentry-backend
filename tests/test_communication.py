@@ -86,6 +86,13 @@ def message_from_officer(vendor, officer_user):
         content="Hello from officer",
     )
 
+@pytest.fixture(autouse=True)
+def _clear_throttle_cache():
+    from django.core.cache import cache
+    cache.clear()
+    yield
+    cache.clear()
+
 
 @pytest.mark.django_db
 class TestChatTokenModel:
@@ -476,3 +483,60 @@ class TestChatConsumerHelpers:
             str(uuid.uuid4()), officer_user
         )
         assert result is False
+
+
+
+@pytest.mark.django_db
+class TestVerifyOtpLockout:
+
+    def test_attempts_increment_on_wrong_otp(self, anon_client, chat_token):
+        anon_client.post(VERIFY_OTP_URL, {
+            "token": str(chat_token.token), "otp_code": "000000",
+        }, format="json")
+        chat_token.refresh_from_db()
+        assert chat_token.otp_attempts == 1
+
+    def test_correct_otp_does_not_increment_attempts(self, anon_client, chat_token):
+        anon_client.post(VERIFY_OTP_URL, {
+            "token": str(chat_token.token), "otp_code": chat_token.otp_code,
+        }, format="json")
+        chat_token.refresh_from_db()
+        assert chat_token.otp_attempts == 0
+
+    def test_locks_token_after_max_attempts(self, anon_client, chat_token):
+        for _ in range(5):
+            res = anon_client.post(VERIFY_OTP_URL, {
+                "token": str(chat_token.token), "otp_code": "000000",
+            }, format="json")
+            assert res.status_code == 400
+        chat_token.refresh_from_db()
+        assert chat_token.is_revoked is True
+
+    def test_locked_token_rejects_even_correct_otp(self, anon_client, chat_token):
+        for _ in range(5):
+            anon_client.post(VERIFY_OTP_URL, {
+                "token": str(chat_token.token), "otp_code": "000000",
+            }, format="json")
+        res = anon_client.post(VERIFY_OTP_URL, {
+            "token": str(chat_token.token), "otp_code": chat_token.otp_code,
+        }, format="json")
+        assert res.status_code == 400
+        assert res.data["success"] is False
+
+    def test_locked_token_reason_message(self, anon_client, chat_token):
+        for _ in range(5):
+            anon_client.post(VERIFY_OTP_URL, {
+                "token": str(chat_token.token), "otp_code": "000000",
+            }, format="json")
+        res = anon_client.post(VERIFY_OTP_URL, {
+            "token": str(chat_token.token), "otp_code": "000000",
+        }, format="json")
+        assert "locked" in res.data["reason"].lower()
+
+    def test_attempts_do_not_increment_once_locked(self, anon_client, chat_token):
+        for _ in range(6):
+            anon_client.post(VERIFY_OTP_URL, {
+                "token": str(chat_token.token), "otp_code": "000000",
+            }, format="json")
+        chat_token.refresh_from_db()
+        assert chat_token.otp_attempts == 5

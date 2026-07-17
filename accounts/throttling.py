@@ -11,3 +11,11 @@ class PasswordResetRateThrottle(AnonRateThrottle):
 
 class RegisterRateThrottle(AnonRateThrottle):
     scope = "register"
+
+
+class OtpVerifyRateThrottle(AnonRateThrottle):
+    scope = "otp_verify"
+
+
+class TokenValidateRateThrottle(AnonRateThrottle):
+    scope = "token_validate"

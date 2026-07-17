@@ -36,6 +36,7 @@ class ChatToken(models.Model):
     # vendor must enter this before WebSocket access is granted
     otp_code = models.CharField(max_length=6, blank=True)
     otp_verified = models.BooleanField(default=False)
+    otp_attempts = models.IntegerField(default=0)
 
     class Meta:
         ordering = ['-created_at']

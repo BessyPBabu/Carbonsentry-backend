@@ -199,6 +199,8 @@ REST_FRAMEWORK = {
         'login': '5/min',
         'password_reset': '5/min',
         'register': '10/hour',
+        'otp_verify': '20/min',
+        'token_validate': '30/min',
     },
 }
 
