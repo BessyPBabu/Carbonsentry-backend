@@ -5,7 +5,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.pagination import PageNumberPagination
 from accounts.throttling import OtpVerifyRateThrottle, TokenValidateRateThrottle
-
+from django.db.models import Prefetch
 from .models import ChatToken, Message
 from .serializers import (
     ChatTokenSerializer,
@@ -34,11 +34,18 @@ class ChatVendorListView(APIView):
 
             vendors = Vendor.objects.filter(
                 organization=request.user.organization
-            ).prefetch_related("messages", "chat_tokens")
+            ).prefetch_related(
+                Prefetch(
+                    "messages",
+                    queryset=Message.objects.order_by("-created_at"),
+                    to_attr="prefetched_messages",
+                ),
+                "chat_tokens",
+            )
 
             result = []
             for vendor in vendors:
-                msgs = list(vendor.messages.order_by("-created_at"))
+                msgs = vendor.prefetched_messages
                 if not msgs:
                     continue
 

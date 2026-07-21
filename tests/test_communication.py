@@ -190,6 +190,42 @@ class TestChatVendorListView:
         results = res.data.get("results", [])
         assert all(str(vendor.id) == r["vendor_id"] or True for r in results)
 
+    def test_no_n_plus_one_as_vendor_count_grows(self, officer_client, verified_org, industry):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        def make_vendor_with_message(email):
+            v = Vendor.objects.create(
+                organization=verified_org, name=f"Vendor {email}",
+                industry=industry, country="India", contact_email=email,
+            )
+            Message.objects.create(
+                vendor=v, message_type="vendor_message",
+                sender_type="vendor", content="hi",
+            )
+            return v
+
+        make_vendor_with_message("q1@v.com")
+        make_vendor_with_message("q2@v.com")
+
+        with CaptureQueriesContext(connection) as ctx_small:
+            res_small = officer_client.get(CHAT_LIST_URL)
+        assert res_small.status_code == 200
+        count_small = len(ctx_small.captured_queries)
+
+        for i in range(8):
+            make_vendor_with_message(f"q{i + 3}@v.com")
+
+        with CaptureQueriesContext(connection) as ctx_large:
+            res_large = officer_client.get(CHAT_LIST_URL)
+        assert res_large.status_code == 200
+        count_large = len(ctx_large.captured_queries)
+
+        assert count_large == count_small, (
+            f"Query count grew with vendor count ({count_small} -> {count_large}) "
+            "— N+1 regression in ChatVendorListView"
+        )
+
 
 @pytest.mark.django_db
 class TestVendorMessagesView:
