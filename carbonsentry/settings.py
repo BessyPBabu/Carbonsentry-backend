@@ -33,6 +33,8 @@ DEBUG = os.getenv("DJANGO_DEBUG", "False") == "True"
 
 ALLOWED_HOSTS = os.getenv("DJANGO_ALLOWED_HOSTS", "").split(",")
 
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+USE_X_FORWARDED_HOST = True
 
 INSTALLED_APPS = [
     "django_prometheus",
@@ -75,12 +77,14 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://localhost:5173",
     "https://carbonsentry.bessypbabu.online",
+    "https://www.carbonsentry.bessypbabu.online",
     "https://carbonsentry.vercel.app",
     
         
 ]
 
 CSRF_TRUSTED_ORIGINS = [
+    "https://www.carbonsentry.bessypbabu.online",
     "https://carbonsentry.bessypbabu.online",
     "https://carbonsentry.vercel.app",
 ]
@@ -318,12 +322,5 @@ CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 
 GEMINI_API_KEY =os.getenv('GEMINI_API_KEY')
 
-PROMETHEUS_URL = os.getenv(
-    "PROMETHEUS_URL",
-    "http://localhost:9090"
-)
-
-GRAFANA_URL = os.getenv(
-    "GRAFANA_URL",
-    "http://localhost:3000"
-)
+PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://prometheus:9090")
+GRAFANA_URL = os.getenv("GRAFANA_URL", "https://www.carbonsentry.bessypbabu.online/grafana")
