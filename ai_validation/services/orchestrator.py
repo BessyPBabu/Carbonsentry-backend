@@ -102,14 +102,6 @@ class ValidationOrchestrator:
         if should_flag:
             self._queue(validation, self._priority(validation), flag_reason)
 
-        # ── Risk calculation ─────────────────────────────────────────────────
-        self._step(validation, "risk_analysis")
-        try:
-            self.risk.calculate(document.vendor)
-        except Exception as exc:
-            # risk calc failure is non-fatal — validation still completes
-            logger.warning("orchestrator: risk calc failed document=%s — %s", document.id, exc)
-
         return self._complete(validation, document, metadata)
 
     # ── Helpers ──────────────────────────────────────────────────────────────
@@ -158,7 +150,6 @@ class ValidationOrchestrator:
             auth_result or self.authenticity._default(),
         )
 
-    # NEW
     def _confidence(self, validation, metadata) -> Decimal:
         score = 0.0
         relevance = (
@@ -279,6 +270,13 @@ class ValidationOrchestrator:
         except Exception as exc:
             logger.error("orchestrator: complete save failed document=%s — %s", document.id, exc)
 
+        try:
+            self.risk.calculate(document.vendor)
+        except Exception as exc:
+            logger.warning(
+                "orchestrator: risk calc failed document=%s — %s", document.id, exc
+            )
+
         logger.info(
             "orchestrator: done document=%s confidence=%.1f flagged=%s elapsed=%ss",
             document.id,
@@ -312,6 +310,14 @@ class ValidationOrchestrator:
                 validation.document.save(update_fields=["status"])
             except Exception as exc:
                 logger.error("orchestrator: document status update failed — %s", exc)
+
+            try:
+                self.risk.calculate(validation.document.vendor)
+            except Exception as exc:
+                logger.warning(
+                    "orchestrator: risk calc failed (fail path) validation=%s — %s",
+                    validation.id, exc,
+                )
 
         except Exception as exc:
             logger.error(

@@ -226,7 +226,12 @@ def generate_vendor_compliance_report(vendor, organization) -> dict:
         },
         'regulatory_applicability':   regulations,
         'emission_verification': {
-            **doc_counts,
+            'total_documents':          doc_counts['total'],
+            'valid_documents':          doc_counts['valid'],
+            'flagged_documents':        doc_counts['flagged'],
+            'invalid_documents':        doc_counts['invalid'],
+            'pending_documents':        doc_counts['pending'],
+            'expired_documents':        doc_counts['expired'],
             'average_ai_confidence':    round(avg_confidence, 1),
             'reasonable_assurance_met': ra_met,
             'assurance_threshold':      75.0,

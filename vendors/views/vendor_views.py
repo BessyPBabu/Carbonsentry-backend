@@ -215,7 +215,9 @@ class VendorDocumentListView(APIView):
             "vendors.documents | vendor=%s count=%s user=%s",
             vendor_id, documents.count(), request.user.id,
         )
-        return Response(DocumentListSerializer(documents, many=True).data)
+        return Response(
+            DocumentListSerializer(documents, many=True, context={"request": request}).data
+        )
 
 
 class VendorSendEmailsView(APIView):

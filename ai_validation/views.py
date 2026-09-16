@@ -287,6 +287,14 @@ class ManualReviewQueueViewSet(viewsets.ModelViewSet):
                 doc.status = "invalid"
             doc.save(update_fields=["status"])
 
+            try:
+                from ai_validation.services.risk_calculator import RiskCalculator
+                RiskCalculator().calculate(doc.vendor)
+            except Exception:
+                logger.exception(
+                    "resolve: risk recalculation failed for vendor=%s", doc.vendor_id
+                )
+
             logger.info(
                 "resolve: review=%s decision=%s doc=%s new_status=%s",
                 pk, decision, doc.id, doc.status,
