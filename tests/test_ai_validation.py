@@ -768,6 +768,21 @@ class TestConfidenceCalculation:
         should_flag, reason = self._make_orchestrator()._flag_decision(validation, mock_meta)
         assert "missing_co2_value" in reason
 
+    def test_exceeds_emission_threshold_triggers_flag(self, validation, threshold):
+        validation.overall_confidence = Decimal("80")
+        validation.authenticity_red_flags = []
+        validation.is_relevant = True
+        validation.detected_document_type = "Emission Report"
+
+        mock_meta = MagicMock()
+        mock_meta.co2_value = Decimal("6000")
+        mock_meta.co2_unit = "tonnes"
+        mock_meta.expiry_date = None
+
+        should_flag, reason = self._make_orchestrator()._flag_decision(validation, mock_meta)
+        assert should_flag is True
+        assert "exceeds_emission_threshold" in reason
+
 
 # ── Celery task ───────────────────────────────────────────────────────────────
 
@@ -901,9 +916,9 @@ class TestIndustryEmissionThreshold:
 @pytest.mark.django_db
 class TestRiskCalculator:
 
-    def test_no_validated_docs_returns_medium(self, vendor, threshold):
+    def test_no_validated_docs_returns_unknown(self, vendor, threshold):
         profile = RiskCalculator().calculate(vendor)
-        assert profile.risk_level == "medium"
+        assert profile.risk_level == "unknown"
 
     def test_low_emissions_returns_low_risk(self, vendor, threshold, document, completed_validation, metadata):
         profile = RiskCalculator().calculate(vendor)
@@ -987,7 +1002,7 @@ class TestRiskCalculator:
     def test_updates_vendor_risk_level(self, vendor, threshold):
         RiskCalculator().calculate(vendor)
         vendor.refresh_from_db()
-        assert vendor.risk_level in ("low", "medium", "high", "critical")
+        assert vendor.risk_level in ("low", "medium", "high", "critical","unknown")
 
     def test_profile_saved_to_db(self, vendor, threshold):
         RiskCalculator().calculate(vendor)
@@ -1014,6 +1029,23 @@ class TestRiskCalculator:
         )
         profile = RiskCalculator().calculate(vendor)
         assert profile.exceeds_threshold is False
+
+    def test_compliant_flips_to_non_compliant_when_exceeds_threshold(
+        self, vendor, threshold, document, completed_validation
+    ):
+        document.status = "valid"
+        document.save(update_fields=["status"])
+        ExtractedMetadata.objects.create(
+            document_validation=completed_validation,
+            document=document,
+            co2_value=Decimal("6000"),
+            co2_unit="tonnes",
+            co2_extraction_confidence=Decimal("90"),
+        )
+        profile = RiskCalculator().calculate(vendor)
+        vendor.refresh_from_db()
+        assert profile.exceeds_threshold is True
+        assert vendor.compliance_status == "non_compliant"
 
 
 # ── VendorRiskProfile ViewSet ─────────────────────────────────────────────────
@@ -1340,3 +1372,70 @@ class TestLangChainClientRetryTuning:
     def test_max_retry_sleep_reduced(self):
         from ai_validation.services.langchain_client import _MAX_RETRY_SLEEP
         assert _MAX_RETRY_SLEEP == 10
+
+
+@pytest.mark.django_db
+class TestIndustryEmissionThresholdListView:
+
+    def test_authenticated_user_can_list_thresholds(self, admin_client, threshold):
+        res = admin_client.get("/api/ai-validation/thresholds/")
+        assert res.status_code == 200
+        assert any(t["industry_name"] == "Technology" for t in res.data)
+
+    def test_unauthenticated_blocked(self, anon_client):
+        assert anon_client.get("/api/ai-validation/thresholds/").status_code == 401
+
+
+class TestFallbackModelIsValid:
+
+    def test_fallback_model_is_not_deprecated_gemini_2_0(self):
+        from ai_validation.services.langchain_client import _FALLBACK_MODEL
+        assert _FALLBACK_MODEL != "gemini-2.0-flash"
+
+
+@pytest.mark.django_db
+class TestMetadataExtractorCacheHydration:
+
+    def test_hydrate_cached_converts_date_strings(self):
+        from ai_validation.services.metadata_extractor import MetadataExtractor
+        extractor = MetadataExtractor.__new__(MetadataExtractor)
+        cached = {
+            "co2_value": "1500.5",
+            "co2_confidence": "90",
+            "co2_unit": "tonnes",
+            "issue_date": "2026-01-15",
+            "issue_date_confidence": "88",
+            "expiry_date": "2027-01-15",
+            "expiry_date_confidence": "85",
+            "issuing_authority": "Bureau Veritas",
+            "issuing_authority_confidence": "80",
+            "certificate_number": "X-1",
+            "verification_standard": "ISO 14064",
+        }
+        hydrated = extractor._hydrate_cached(cached)
+
+        assert isinstance(hydrated["issue_date"], date)
+        assert isinstance(hydrated["expiry_date"], date)
+        assert isinstance(hydrated["co2_value"], Decimal)
+        assert isinstance(hydrated["co2_confidence"], Decimal)
+
+    def test_hydrate_cached_handles_unparsable_date(self):
+        from ai_validation.services.metadata_extractor import MetadataExtractor
+        extractor = MetadataExtractor.__new__(MetadataExtractor)
+        hydrated = extractor._hydrate_cached({"expiry_date": "not-a-date"})
+        assert hydrated["expiry_date"] is None
+
+    def test_cached_metadata_does_not_crash_flag_decision(self, validation, threshold):
+        from ai_validation.services.orchestrator import ValidationOrchestrator
+
+        validation.overall_confidence = Decimal("80")
+        validation.authenticity_red_flags = []
+        validation.is_relevant = True
+        validation.detected_document_type = "Emission Report"
+
+        mock_meta = MagicMock()
+        mock_meta.co2_value = Decimal("500")
+        mock_meta.expiry_date = date.today() + timedelta(days=100)
+
+        should_flag, reason = ValidationOrchestrator()._flag_decision(validation, mock_meta)
+        assert isinstance(should_flag, bool)

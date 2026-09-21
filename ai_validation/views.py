@@ -10,12 +10,13 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from accounts.permissions import IsAdminOrOfficer
-from .models import DocumentValidation, VendorRiskProfile, ManualReviewQueue, AIAuditLog
+from .models import DocumentValidation, VendorRiskProfile, ManualReviewQueue, AIAuditLog, IndustryEmissionThreshold
 from .serializers import (
     DocumentValidationSerializer,
     VendorRiskProfileSerializer,
     ManualReviewQueueSerializer,
     AIAuditLogSerializer,
+    IndustryEmissionThresholdSerializer,
 )
 from .tasks import validate_document_async
 
@@ -409,3 +410,21 @@ class AIMonitoringView(APIView):
         except Exception:
             logger.exception("AIMonitoringView._from_db: error")
             return {}
+
+class IndustryEmissionThresholdListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            thresholds = (
+                IndustryEmissionThreshold.objects
+                .select_related('industry')
+                .order_by('industry__name')
+            )
+            return Response(IndustryEmissionThresholdSerializer(thresholds, many=True).data)
+        except Exception:
+            logger.exception("IndustryEmissionThresholdListView: failed to fetch thresholds")
+            return Response(
+                {"error": "Failed to fetch thresholds"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )

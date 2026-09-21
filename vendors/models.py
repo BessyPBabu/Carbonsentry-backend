@@ -73,6 +73,7 @@ class Vendor(models.Model):
         ("expired", "Expired"),
     ]
     RISK_LEVEL_CHOICES = [
+        ("unknown", "Unknown"),
         ("low", "Low"),
         ("medium", "Medium"),
         ("high", "High"),
@@ -97,7 +98,7 @@ class Vendor(models.Model):
     risk_level = models.CharField(
         max_length=20,
         choices=RISK_LEVEL_CHOICES,
-        default="medium",
+        default="unknown",
         db_index=True,
     )
     upload_token = models.CharField(

@@ -90,6 +90,13 @@ class RiskCalculator:
         else:
             compliance_status = 'pending'
 
+        # A vendor whose documents are individually valid but whose reported
+        # emissions exceed the industry threshold must not be shown as compliant.
+        if compliance_status == 'compliant' and (
+            risk_profile.exceeds_threshold or risk_level in ('high', 'critical')
+        ):
+            compliance_status = 'non_compliant'
+
         vendor.compliance_status = compliance_status
         vendor.save(update_fields=['risk_level', 'compliance_status'])
 
@@ -121,7 +128,7 @@ class RiskCalculator:
 
     def _risk_level(self, emissions, threshold, total_docs, validated_docs):
         if validated_docs == 0:
-            return 'medium'  
+            return 'unknown'  
 
         if emissions == 0:
             coverage = validated_docs / total_docs if total_docs > 0 else 0

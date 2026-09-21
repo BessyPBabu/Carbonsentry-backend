@@ -4,7 +4,8 @@ from .views import (
     DocumentValidationViewSet,
     VendorRiskProfileViewSet,
     ManualReviewQueueViewSet,
-    AIMonitoringView
+    AIMonitoringView,
+    IndustryEmissionThresholdListView
 )
 
 router = DefaultRouter()
@@ -15,4 +16,5 @@ router.register(r'manual-reviews', ManualReviewQueueViewSet, basename='manual-re
 urlpatterns = [
     path('', include(router.urls)),
     path('monitoring/', AIMonitoringView.as_view(), name='ai-monitoring'),
+    path('thresholds/', IndustryEmissionThresholdListView.as_view(), name='emission-thresholds')
 ]

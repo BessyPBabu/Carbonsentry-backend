@@ -187,8 +187,8 @@ class TestVendorModel:
     def test_default_compliance_status_pending(self, vendor):
         assert vendor.compliance_status == "pending"
 
-    def test_default_risk_level_medium(self, vendor):
-        assert vendor.risk_level == "medium"
+    def test_default_risk_level_unknown(self, vendor):
+        assert vendor.risk_level == "unknown"
 
     def test_cascade_delete_removes_documents(self, vendor, document):
         vid = vendor.id

@@ -204,6 +204,21 @@ class ValidationOrchestrator:
         ):
             reasons.append("missing_co2_value")
 
+        if metadata and metadata.co2_value is not None:
+            try:
+                threshold = self.risk._get_threshold(validation.document.vendor.industry)
+                co2 = (
+                    metadata.co2_value / Decimal('1000')
+                    if metadata.co2_unit == 'kg' else metadata.co2_value
+                )
+                if co2 > threshold.high_threshold:
+                    reasons.append(f"exceeds_emission_threshold:{co2}")
+            except Exception:
+                logger.warning(
+                    "orchestrator: emission threshold check failed validation=%s",
+                    validation.id, exc_info=True,
+                )
+
         if reasons:
             return True, ";".join(reasons)
         return False, ""
@@ -232,7 +247,6 @@ class ValidationOrchestrator:
             )
             return  
 
-    
         try:
             from ..metrics import manual_review_queue_size
             count = ManualReviewQueue.objects.filter(status="pending").count()

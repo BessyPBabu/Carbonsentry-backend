@@ -26,17 +26,6 @@ _SEBI_SECTORS = {
     'healthcare', 'pharmaceuticals',
 }
 
-# ── Emission thresholds by industry (tonnes CO2e/year) ───────────────────────
-_THRESHOLDS = {
-    'Manufacturing':   {'low': 1000,  'medium': 5000,  'high': 15000, 'critical': 50000},
-    'Technology':      {'low': 300,   'medium': 1500,  'high': 5000,  'critical': 12000},
-    'Retail':          {'low': 300,   'medium': 1500,  'high': 3000,  'critical': 8000},
-    'Logistics':       {'low': 2000,  'medium': 10000, 'high': 30000, 'critical': 100000},
-    'Energy':          {'low': 5000,  'medium': 20000, 'high': 80000, 'critical': 250000},
-    'Healthcare':      {'low': 400,   'medium': 2000,  'high': 7000,  'critical': 20000},
-    'default':         {'low': 1000,  'medium': 5000,  'high': 10000, 'critical': 50000},
-}
-
 # ── CO2 reduction strategies (used when emissions high) ──────────────────────
 _REDUCTION_STRATEGIES = [
     {
@@ -91,10 +80,33 @@ def _industry_key(industry_name: str) -> str:
 
 
 def _get_threshold(industry_name: str) -> dict:
-    for key, val in _THRESHOLDS.items():
+    from ai_validation.constants import DEFAULT_THRESHOLDS
+    from ai_validation.models import IndustryEmissionThreshold
+    from vendors.models import Industry
+
+    try:
+        industry_obj = Industry.objects.filter(
+            name__iexact=(industry_name or '').strip()
+        ).first()
+        if industry_obj:
+            t = IndustryEmissionThreshold.objects.filter(industry=industry_obj).first()
+            if t:
+                return {
+                    'low': float(t.low_threshold),
+                    'medium': float(t.medium_threshold),
+                    'high': float(t.high_threshold),
+                    'critical': float(t.critical_threshold),
+                }
+    except Exception:
+        logger.warning(
+            "compliance_engine._get_threshold: DB lookup failed for '%s'",
+            industry_name, exc_info=True,
+        )
+
+    for key, val in DEFAULT_THRESHOLDS.items():
         if key.lower() in _industry_key(industry_name):
             return val
-    return _THRESHOLDS['default']
+    return DEFAULT_THRESHOLDS['default']
 
 
 def _reasonable_assurance(confidence: float) -> bool:
@@ -193,7 +205,7 @@ def generate_vendor_compliance_report(vendor, organization) -> dict:
     # ── 4. Regulatory risk exposure ───────────────────────────────────────────
     exposure = _build_exposure(
         industry_key, is_indian, total_co2, extracted_total,
-        avg_confidence, ra_met, doc_counts,
+        avg_confidence, ra_met, doc_counts, exceeds,
     )
 
     # ── 5. Compliance gaps ────────────────────────────────────────────────────
@@ -305,7 +317,8 @@ def _build_regulations(industry_key: str, is_indian: bool) -> list:
 
 
 def _build_exposure(
-    industry_key, is_indian, total_co2, extracted_total, avg_confidence, ra_met, doc_counts
+    industry_key, is_indian, total_co2, extracted_total, avg_confidence, ra_met, doc_counts,
+    exceeds_threshold=False,
 ) -> list:
     exposure = []
     co2_for_calc = total_co2 or extracted_total
@@ -339,20 +352,25 @@ def _build_exposure(
         })
 
     if is_indian:
-        has_failure = doc_counts['invalid'] > 0 or (
-            doc_counts['total'] > 0 and doc_counts['valid'] == 0
+        has_failure = (
+            doc_counts['invalid'] > 0
+            or (doc_counts['total'] > 0 and doc_counts['valid'] == 0)
+            or exceeds_threshold
         )
+        if exceeds_threshold:
+            detail = 'Reported emissions exceed the industry threshold — NGT compliance at risk'
+        elif has_failure:
+            detail = 'One or more documents failed verification — NGT compliance at risk'
+        else:
+            detail = 'Documents verified — NGT monitoring requirements met'
+
         exposure.append({
             'regulation': 'NGT India',
             'status':     'at_risk' if has_failure else 'compliant',
-            'detail':     (
-                'One or more documents failed verification — NGT compliance at risk'
-                if has_failure else
-                'Documents verified — NGT monitoring requirements met'
-            ),
+            'detail':     detail,
             'financial_exposure': {
                 'inr': _NGT_MAX_PENALTY if has_failure else 0,
-                'display': f'Up to ₹1.9 Crore' if has_failure else '₹0',
+                'display': 'Up to ₹1.9 Crore' if has_failure else '₹0',
             } if has_failure else None,
             'risk_rating': 'high' if has_failure else 'low',
         })

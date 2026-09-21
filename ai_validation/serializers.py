@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from .models import (
     DocumentValidation, ExtractedMetadata, VendorRiskProfile,
-    ManualReviewQueue, AIAuditLog
+    ManualReviewQueue, AIAuditLog, IndustryEmissionThreshold
 )
 
 
@@ -85,4 +85,14 @@ class AIAuditLogSerializer(serializers.ModelSerializer):
             'prompt_sent', 'raw_response', 'parsed_response',
             'model_used', 'success', 'error_message',
             'created_at'
+        ]
+
+class IndustryEmissionThresholdSerializer(serializers.ModelSerializer):
+    industry_name = serializers.CharField(source='industry.name', read_only=True)
+
+    class Meta:
+        model = IndustryEmissionThreshold
+        fields = [
+            'id', 'industry', 'industry_name',
+            'low_threshold', 'medium_threshold', 'high_threshold', 'critical_threshold',
         ]

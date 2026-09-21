@@ -1,7 +1,7 @@
 import base64
 import io
 import logging
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 import PIL.Image
@@ -40,7 +40,8 @@ class MetadataExtractor:
         if file_path:
             cached = get_cached(file_path, "extraction")
             if cached:
-                metadata = self._save(validation, cached, raw=cached)
+                hydrated = self._hydrate_cached(cached)
+                metadata = self._save(validation, hydrated, raw=cached)
                 return (True, metadata, None) if metadata else (False, None, "cache_save_failed")
 
         try:
@@ -78,6 +79,40 @@ class MetadataExtractor:
             return False, None, "db_save_failed"
 
         return True, metadata, None
+
+    def _hydrate_cached(self, cached: dict) -> dict:
+        hydrated = dict(cached)
+
+        for field in ("issue_date", "expiry_date"):
+            val = hydrated.get(field)
+            if isinstance(val, str):
+                try:
+                    hydrated[field] = datetime.strptime(val, "%Y-%m-%d").date()
+                except ValueError:
+                    logger.warning(
+                        "metadata_extractor: cached %s '%s' unparsable, dropping", field, val
+                    )
+                    hydrated[field] = None
+
+        co2 = hydrated.get("co2_value")
+        if co2 is not None:
+            try:
+                hydrated["co2_value"] = Decimal(str(co2))
+            except Exception:
+                hydrated["co2_value"] = None
+
+        for field in (
+            "co2_confidence", "issue_date_confidence",
+            "expiry_date_confidence", "issuing_authority_confidence",
+        ):
+            val = hydrated.get(field)
+            if val is not None:
+                try:
+                    hydrated[field] = Decimal(str(val))
+                except Exception:
+                    hydrated[field] = Decimal("0")
+
+        return hydrated
 
     def _clean(self, output: MetadataOutput) -> dict:
         cleaned = {}

@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
 
 _PRIMARY_MODEL  = "gemini-2.5-flash"
-_FALLBACK_MODEL = "gemini-2.0-flash"
+_FALLBACK_MODEL = "gemini-3.6-flash"
 
 
 CALL_TIMEOUT_RELEVANCE    = 20

@@ -406,11 +406,11 @@ class PDFExporter:
             headers = ["Document Type", "Status", "Confidence", "CO2 (tonnes)", "Assurance"]
             rows    = [
                 [
-                    d['document_type'],
-                    d['status'],
-                    f"{d['confidence']:.1f}%" if d['confidence'] else '—',
-                    f"{d['co2_extracted']:,.2f}" if d['co2_extracted'] else '—',
-                    "Met" if d['assurance_met'] else "Not met",
+                    d.get('document_type', '—'),
+                    d.get('document_status', '—'),
+                    f"{d['confidence']:.1f}%" if d.get('confidence') else '—',
+                    f"{d['co2_extracted']:,.2f}" if d.get('co2_extracted') else '—',
+                    "Met" if d.get('assurance_met') else "Not met",
                 ]
                 for d in doc_details
             ]

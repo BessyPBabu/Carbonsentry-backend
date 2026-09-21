@@ -546,6 +546,26 @@ class TestReportGenerator:
         )
         assert "validation_summary" in data
 
+    def test_vendor_compliance_ngt_exposure_reflects_emission_threshold(self, verified_org, vendor):
+        from reports.services import ReportGenerator
+        from ai_validation.models import VendorRiskProfile
+
+        VendorRiskProfile.objects.create(
+            vendor=vendor,
+            organization=verified_org,
+            risk_level="critical",
+            risk_score=Decimal("90"),
+            total_co2_emissions=Decimal("50000"),
+            exceeds_threshold=True,
+        )
+        data = ReportGenerator().generate(
+            report_type="vendor_compliance_report",
+            organization=verified_org,
+            vendor=vendor,
+        )
+        ngt = next(e for e in data["regulatory_risk_exposure"] if e["regulation"] == "NGT India")
+        assert ngt["status"] == "at_risk"
+
 
 @pytest.mark.django_db
 class TestPDFExporterEscaping:
@@ -637,6 +657,42 @@ class TestPDFExporterEscaping:
                     {"priority": 1, "action": "Escalate to senior management",
                      "owner": "Senior Management", "urgency": "critical"},
                 ],
+            },
+        )
+        pdf_bytes = PDFExporter().export(report)
+        assert pdf_bytes.startswith(b"%PDF")
+
+    def test_vendor_compliance_pdf_with_document_details_does_not_crash(self, verified_org, vendor, officer_user):
+        from reports.services import PDFExporter
+        report = Report.objects.create(
+            organization=verified_org,
+            report_type="vendor_compliance_report",
+            title="Doc Details Test",
+            vendor=vendor,
+            generated_by=officer_user,
+            status="generated",
+            data={
+                "vendor": {"name": vendor.name, "industry": "Technology", "country": "India",
+                           "compliance_status": "non_compliant", "risk_level": "critical"},
+                "regulatory_applicability": [],
+                "emission_verification": {
+                    "total_documents": 1, "valid_documents": 1, "flagged_documents": 0,
+                    "invalid_documents": 0, "expired_documents": 0, "average_ai_confidence": 88.4,
+                    "reasonable_assurance_met": True,
+                    "document_details": [{
+                        "document_type": "Emission Report",
+                        "document_status": "valid",
+                        "validation_status": "completed",
+                        "confidence": 88.4,
+                        "co2_extracted": 5000.0,
+                        "co2_unit": "tonnes",
+                        "assurance_met": True,
+                    }],
+                },
+                "scope_emissions": {"total_co2_tonnes": 5000, "risk_score": 40, "exceeds_threshold": True},
+                "regulatory_risk_exposure": [],
+                "compliance_gap_analysis": [],
+                "recommendations": [],
             },
         )
         pdf_bytes = PDFExporter().export(report)
