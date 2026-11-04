@@ -2,6 +2,8 @@ import logging
 from datetime import date
 from django.db.models import Avg
 
+from reports.schema import VendorComplianceReport
+
 logger = logging.getLogger(__name__)
 
 # ── Regulatory thresholds ─────────────────────────────────────────────────────
@@ -126,7 +128,7 @@ def _emission_band(co2: float, industry: str) -> str:
     return 'critical'
 
 
-def generate_vendor_compliance_report(vendor, organization) -> dict:
+def generate_vendor_compliance_report(vendor, organization) -> VendorComplianceReport:
     from vendors.models import Document
     from ai_validation.models import VendorRiskProfile, DocumentValidation
 
@@ -225,6 +227,7 @@ def generate_vendor_compliance_report(vendor, organization) -> dict:
 
     # ── 8. Action checklist ───────────────────────────────────────────────────
     actions = _build_action_checklist(doc_counts, avg_confidence, ra_met, emission_band, exceeds)
+    recommendations = _build_recommendations(actions)
 
     return {
         'generated_at': str(date.today()),
@@ -269,6 +272,7 @@ def generate_vendor_compliance_report(vendor, organization) -> dict:
             'confidence_level':     recommendation['confidence'],
             'review_date':          recommendation['review_date'],
         },
+        'recommendations': recommendations,
         'action_checklist': actions,
     }
 
@@ -632,3 +636,7 @@ def _build_action_checklist(doc_counts, avg_confidence, ra_met, emission_band, e
         })
 
     return actions
+
+
+def _build_recommendations(actions: list) -> list:
+    return [a['action'] for a in actions]
