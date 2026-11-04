@@ -19,6 +19,12 @@ def _sanitize_for_json(obj):
     return obj
 
 
+def _format_score(score):
+    if score is None:
+        return "N/A"
+    return f"{float(score):.1f} / 100"
+
+
 class ReportGenerator:
 
     def generate(self, report_type, organization, vendor=None, date_from=None, date_to=None):
@@ -113,7 +119,7 @@ class ReportGenerator:
                 'country': vendor.country, 'compliance_status': vendor.compliance_status,
             },
             'risk_summary': {
-                'overall_score': float(risk_profile.risk_score) if risk_profile else 0,
+                'overall_score': float(risk_profile.risk_score) if risk_profile and risk_profile.risk_score is not None else None,
                 'risk_level':    risk_profile.risk_level if risk_profile else 'unknown',
                 'factors':       risk_factors,
             },
@@ -420,7 +426,7 @@ class PDFExporter:
         elements += self._section_heading("Emission Data")
         elements += self._kv_table([
             ("Total CO2 Emissions",  f"{em.get('total_co2_tonnes', 0):,.2f} tonnes CO2e"),
-            ("Risk Score",           f"{em.get('risk_score', 0):.1f} / 100"),
+            ("Risk Score",           _format_score(em.get('risk_score'))),
             ("Exceeds Threshold",    "Yes" if em.get('exceeds_threshold') else "No"),
         ])
 
@@ -504,7 +510,7 @@ class PDFExporter:
         elements = []
         elements += self._section_heading("Risk Summary")
         elements += self._kv_table([
-            ("Overall Risk Score", f"{data.get('risk_summary', {}).get('overall_score', 0)} / 100"),
+            ("Overall Risk Score", _format_score(data.get('risk_summary', {}).get('overall_score'))),
             ("Risk Level",         data.get('risk_summary', {}).get('risk_level', '—').upper()),
             ("Compliance Status",  data.get('vendor', {}).get('compliance_status', '—')),
         ])

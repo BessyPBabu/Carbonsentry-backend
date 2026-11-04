@@ -185,12 +185,12 @@ def generate_vendor_compliance_report(vendor, organization) -> dict:
     try:
         rp = VendorRiskProfile.objects.get(vendor=vendor)
         total_co2     = float(rp.total_co2_emissions or 0)
-        risk_score    = float(rp.risk_score or 0)
+        risk_score    = float(rp.risk_score) if rp.risk_score is not None else None
         risk_level    = rp.risk_level
         exceeds       = rp.exceeds_threshold
     except VendorRiskProfile.DoesNotExist:
         total_co2  = 0.0
-        risk_score = 0.0
+        risk_score = None
         risk_level = 'unknown'
         exceeds    = False
 
@@ -254,7 +254,7 @@ def generate_vendor_compliance_report(vendor, organization) -> dict:
             'extracted_from_docs': round(extracted_total, 2),
             'unit':                'tonnes CO2e',
             'emission_band':       emission_band,
-            'risk_score':          round(risk_score, 1),
+            'risk_score':          round(risk_score, 1) if risk_score is not None else None,
             'risk_level':          risk_level,
             'exceeds_threshold':   exceeds,
             'industry_thresholds': _get_threshold(industry_name),
