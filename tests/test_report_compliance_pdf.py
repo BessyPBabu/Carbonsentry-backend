@@ -58,3 +58,22 @@ class TestGapAndExposureRendering:
         assert "INR 1,900,000" in texts
         assert "Documents failed" in texts
         assert PDFExporter().export(report).startswith(b"%PDF")
+
+
+@pytest.mark.django_db
+class TestVendorPlaceholders:
+
+    @pytest.mark.parametrize("industry", [None, ""])
+    def test_missing_industry_shows_placeholder_not_none(self, verified_org, officer_user, vendor, industry):
+        report = _report(verified_org, officer_user, vendor, {"vendor": {
+            "name": "Pdf Vendor", "industry": industry, "country": None,
+            "compliance_status": None, "risk_level": "",
+        }})
+        cells = [row for e in PDFExporter()._build_body(report) if hasattr(e, "_cellvalues") for row in e._cellvalues]
+        table = dict(cells[:5])
+        assert table["Industry"] == "—"
+        assert table["Country"] == "—"
+        assert table["Compliance Status"] == "—"
+        assert table["Risk Level"] == "—"
+        assert "None" not in [v for _, v in cells[:5]]
+        assert PDFExporter().export(report).startswith(b"%PDF")

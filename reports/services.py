@@ -20,6 +20,12 @@ def _sanitize_for_json(obj):
     return obj
 
 
+def _text(value, default="—"):
+    if value is None or value == "":
+        return default
+    return str(value)
+
+
 def _format_score(score):
     if score is None:
         return "N/A"
@@ -381,11 +387,11 @@ class PDFExporter:
 
         elements += self._section_heading("Vendor Overview")
         elements += self._kv_table([
-            ("Vendor",             vendor.get('name', '—')),
-            ("Industry",           vendor.get('industry', '—')),
-            ("Country",            vendor.get('country', '—')),
-            ("Compliance Status",  vendor.get('compliance_status', '—').upper()),
-            ("Risk Level",         vendor.get('risk_level', '—').upper()),
+            ("Vendor",             _text(vendor.get('name'))),
+            ("Industry",           _text(vendor.get('industry'))),
+            ("Country",            _text(vendor.get('country'))),
+            ("Compliance Status",  _text(vendor.get('compliance_status')).upper()),
+            ("Risk Level",         _text(vendor.get('risk_level')).upper()),
         ])
 
         regs = data.get('regulatory_applicability', [])
