@@ -2,10 +2,15 @@ import logging
 from decimal import Decimal
 from datetime import date, timedelta
 
+from django.db import transaction
+
 from ..models import IndustryEmissionThreshold, VendorRiskProfile
 from ..constants import DEFAULT_THRESHOLDS
 
 logger = logging.getLogger(__name__)
+
+BAND_FLOORS = (('low', 0), ('medium', 40), ('high', 60), ('critical', 80))
+SEVERITY = {name: i for i, (name, _) in enumerate(BAND_FLOORS)}
 
 
 class RiskCalculator:
@@ -55,23 +60,21 @@ class RiskCalculator:
             raise
 
         risk_level = self._risk_level(total_emissions, threshold, total_docs, validated_docs)
-        risk_score = self._risk_score(total_emissions, threshold, flagged_docs, total_docs, earliest_expiry)
+        if risk_level == 'unknown':
+            risk_score = None
+        else:
+            raw_score = self._risk_score(total_emissions, threshold, flagged_docs, total_docs, earliest_expiry)
+            risk_level, risk_score = self._reconcile(risk_level, raw_score)
         avg_confidence = Decimal(str(sum(confidences) / len(confidences))) if confidences else None
 
         risk_profile.risk_level = risk_level
-        risk_profile.risk_score = Decimal(str(risk_score))
+        risk_profile.risk_score = None if risk_score is None else Decimal(str(risk_score))
         risk_profile.total_documents = total_docs
         risk_profile.validated_documents = validated_docs
         risk_profile.flagged_documents = flagged_docs
         risk_profile.total_co2_emissions = total_emissions if total_emissions > 0 else None
         risk_profile.exceeds_threshold = total_emissions > threshold.high_threshold if total_emissions > 0 else False
         risk_profile.avg_document_confidence = avg_confidence
-
-        try:
-            risk_profile.save()
-        except Exception as e:
-            logger.exception("calculate: failed to save risk profile for vendor %s", vendor.id)
-            raise
 
         vendor.risk_level = risk_level
 
@@ -98,10 +101,17 @@ class RiskCalculator:
             compliance_status = 'non_compliant'
 
         vendor.compliance_status = compliance_status
-        vendor.save(update_fields=['risk_level', 'compliance_status'])
+
+        try:
+            with transaction.atomic():
+                risk_profile.save()
+                vendor.save(update_fields=['risk_level', 'compliance_status'])
+        except Exception:
+            logger.exception("calculate: failed to save risk profile and vendor %s", vendor.id)
+            raise
 
         logger.info(
-            "calculate: vendor=%s level=%s compliance=%s score=%.2f emissions=%s",
+            "calculate: vendor=%s level=%s compliance=%s score=%s emissions=%s",
             vendor.id, risk_level, compliance_status, risk_score, total_emissions,
         )
         return risk_profile
@@ -141,6 +151,18 @@ class RiskCalculator:
         if emissions <= threshold.high_threshold:
             return 'high'
         return 'critical'
+
+    def _reconcile(self, level, score):
+        band = 'low'
+        for name, floor in BAND_FLOORS:
+            if score >= floor:
+                band = name
+
+        if SEVERITY[band] > SEVERITY[level]:
+            level = band
+
+        floor = dict(BAND_FLOORS)[level]
+        return level, round(min(max(score, floor), 100), 2)
 
     def _risk_score(self, emissions, threshold, flagged, total, expiry_date):
         score = 0.0

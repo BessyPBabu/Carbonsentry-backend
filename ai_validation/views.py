@@ -1,7 +1,7 @@
 import logging
 
 from django.conf import settings
-from django.db.models import Avg, Q
+from django.db.models import Avg, F, Q
 from django.utils import timezone
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
@@ -153,7 +153,7 @@ class VendorRiskProfileViewSet(viewsets.ReadOnlyModelViewSet):
             if vendor_id := self.request.query_params.get("vendor"):
                 qs = qs.filter(vendor_id=vendor_id)
 
-            return qs.order_by("-risk_score")
+            return qs.order_by(F("risk_score").desc(nulls_last=True))
 
         except Exception:
             logger.exception("get_queryset: error for user %s", self.request.user.id)
@@ -162,13 +162,17 @@ class VendorRiskProfileViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=False, methods=["get"])
     def dashboard_stats(self, request):
         try:
-            qs = self.get_queryset()
+            if hasattr(request.user, "organization"):
+                qs = VendorRiskProfile.objects.filter(organization=request.user.organization)
+            else:
+                qs = VendorRiskProfile.objects.none()
             return Response({
                 "total_vendors": qs.count(),
                 "low_risk":      qs.filter(risk_level="low").count(),
                 "medium_risk":   qs.filter(risk_level="medium").count(),
                 "high_risk":     qs.filter(risk_level="high").count(),
                 "critical_risk": qs.filter(risk_level="critical").count(),
+                "unknown_risk":  qs.filter(risk_level="unknown").count(),
             })
         except Exception:
             logger.exception("dashboard_stats: error for user %s", request.user.id)

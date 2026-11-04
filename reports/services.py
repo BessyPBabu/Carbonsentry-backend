@@ -113,7 +113,7 @@ class ReportGenerator:
                 'country': vendor.country, 'compliance_status': vendor.compliance_status,
             },
             'risk_summary': {
-                'overall_score': float(risk_profile.risk_score) if risk_profile else 0,
+                'overall_score': float(risk_profile.risk_score) if risk_profile and risk_profile.risk_score is not None else 0,
                 'risk_level':    risk_profile.risk_level if risk_profile else 'unknown',
                 'factors':       risk_factors,
             },
