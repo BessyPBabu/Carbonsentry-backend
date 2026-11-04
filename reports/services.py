@@ -436,19 +436,20 @@ class PDFExporter:
             elements += self._section_heading("Regulatory Risk & Financial Exposure")
             for e in exposure:
                 rows = [("Regulation", e.get('regulation', '—')), ("Status", e.get('status', '—'))]
-                if e.get('estimated_carbon_cost_eur'):
-                    rows.append(("Estimated CBAM Cost (EUR)", f"EUR {e['estimated_carbon_cost_eur']:,.2f}"))
-                    rows.append(("Estimated CBAM Cost (INR)", f"INR {e['estimated_carbon_cost_inr']:,.2f}"))
-                if e.get('max_penalty_display'):
-                    rows.append(("Max NGT Penalty", e['max_penalty_display']))
-                if e.get('gap'):
-                    rows.append(("Gap", e['gap']))
+                if e.get('detail'):
+                    rows.append(("Detail", e['detail']))
+                fe = e.get('financial_exposure') or {}
+                if fe.get('eur'):
+                    rows.append(("Estimated CBAM Cost (EUR)", f"EUR {fe['eur']:,.2f}"))
+                    rows.append(("Estimated CBAM Cost (INR)", f"INR {fe.get('inr', 0):,.2f}"))
+                elif fe.get('inr'):
+                    rows.append(("Max NGT Penalty", f"INR {fe['inr']:,.0f}"))
                 elements += self._kv_table(rows)
 
         gaps = data.get('compliance_gap_analysis', [])
         if gaps:
             elements += self._section_heading("Compliance Gaps")
-            elements += self._bullet_list(gaps)
+            elements += self._bullet_list([self._format_gap(g) for g in gaps])
 
         elements += self._section_heading("Recommendations")
         elements += self._bullet_list(resolve_recommendations(data) or ["No recommendations"])
@@ -647,11 +648,17 @@ class PDFExporter:
         ]))
         return [t, Spacer(1, 4*mm)]
 
+    def _format_gap(self, gap):
+        if isinstance(gap, dict):
+            title, detail = gap.get('gap'), gap.get('detail')
+            return f"{title}: {detail}" if title and detail else (title or detail or '—')
+        return str(gap)
+
     def _bullet_list(self, items):
         from reportlab.platypus import Paragraph, Spacer
         from reportlab.lib.styles import ParagraphStyle
         style = ParagraphStyle('Bullet', fontSize=10, fontName='Helvetica', leftIndent=12, spaceAfter=3)
-        elements = [Paragraph(f"• {item}", style) for item in items]
+        elements = [Paragraph(f"• {_xml_escape(str(item))}", style) for item in items]
         elements.append(Spacer(1, 4))
         return elements
 
