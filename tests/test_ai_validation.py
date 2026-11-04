@@ -1004,6 +1004,16 @@ class TestAIMonitoringView:
         assert metrics["validations_review"] == 0
         assert metrics["validations_invalid"] == 0
 
+    def test_db_error_returns_empty_metrics_and_logs(self, admin_client):
+        with patch(
+            "ai_validation.views.DocumentValidation.objects.filter",
+            side_effect=Exception("db down"),
+        ), patch("ai_validation.views.logger") as mock_logger:
+            res = admin_client.get(MONITORING_URL)
+        assert res.status_code == 200
+        assert res.data["metrics"] == {}
+        mock_logger.exception.assert_called_once()
+
     def test_from_db_without_organization_returns_no_data(self, completed_validation, org_b_validations):
         from ai_validation.views import AIMonitoringView
         assert AIMonitoringView()._from_db(None) == {}
