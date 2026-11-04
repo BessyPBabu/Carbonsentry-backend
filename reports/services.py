@@ -5,6 +5,7 @@ from xml.sax.saxutils import escape as _xml_escape
 from django.db.models import Avg, Count, Q, Sum
 
 from reports.compliance_engine import generate_vendor_compliance_report
+from reports.schema import resolve_recommendations
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,12 @@ def _sanitize_for_json(obj):
     if isinstance(obj, Decimal):
         return float(obj)
     return obj
+
+
+def _text(value, default="—"):
+    if value is None or value == "":
+        return default
+    return str(value)
 
 
 def _format_score(score):
@@ -380,11 +387,11 @@ class PDFExporter:
 
         elements += self._section_heading("Vendor Overview")
         elements += self._kv_table([
-            ("Vendor",             vendor.get('name', '—')),
-            ("Industry",           vendor.get('industry', '—')),
-            ("Country",            vendor.get('country', '—')),
-            ("Compliance Status",  vendor.get('compliance_status', '—').upper()),
-            ("Risk Level",         vendor.get('risk_level', '—').upper()),
+            ("Vendor",             _text(vendor.get('name'))),
+            ("Industry",           _text(vendor.get('industry'))),
+            ("Country",            _text(vendor.get('country'))),
+            ("Compliance Status",  _text(vendor.get('compliance_status')).upper()),
+            ("Risk Level",         _text(vendor.get('risk_level')).upper()),
         ])
 
         regs = data.get('regulatory_applicability', [])
@@ -414,8 +421,8 @@ class PDFExporter:
                 [
                     d.get('document_type', '—'),
                     d.get('document_status', '—'),
-                    f"{d['confidence']:.1f}%" if d.get('confidence') else '—',
-                    f"{d['co2_extracted']:,.2f}" if d.get('co2_extracted') else '—',
+                    f"{d['confidence']:.1f}%" if d.get('confidence') is not None else '—',
+                    f"{d['co2_extracted']:,.2f}" if d.get('co2_extracted') is not None else '—',
                     "Met" if d.get('assurance_met') else "Not met",
                 ]
                 for d in doc_details
@@ -435,25 +442,23 @@ class PDFExporter:
             elements += self._section_heading("Regulatory Risk & Financial Exposure")
             for e in exposure:
                 rows = [("Regulation", e.get('regulation', '—')), ("Status", e.get('status', '—'))]
-                if e.get('estimated_carbon_cost_eur'):
-                    rows.append(("Estimated CBAM Cost (EUR)", f"EUR {e['estimated_carbon_cost_eur']:,.2f}"))
-                    rows.append(("Estimated CBAM Cost (INR)", f"INR {e['estimated_carbon_cost_inr']:,.2f}"))
-                if e.get('max_penalty_display'):
-                    rows.append(("Max NGT Penalty", e['max_penalty_display']))
-                if e.get('gap'):
-                    rows.append(("Gap", e['gap']))
+                if e.get('detail'):
+                    rows.append(("Detail", e['detail']))
+                fe = e.get('financial_exposure') or {}
+                if fe.get('eur') is not None:
+                    rows.append(("Estimated CBAM Cost (EUR)", f"EUR {fe['eur']:,.2f}"))
+                    rows.append(("Estimated CBAM Cost (INR)", f"INR {fe.get('inr', 0):,.2f}"))
+                elif fe.get('inr') is not None:
+                    rows.append(("Max NGT Penalty", f"INR {fe['inr']:,.0f}"))
                 elements += self._kv_table(rows)
 
         gaps = data.get('compliance_gap_analysis', [])
         if gaps:
             elements += self._section_heading("Compliance Gaps")
-            elements += self._bullet_list(gaps)
+            elements += self._bullet_list([self._format_gap(g) for g in gaps])
 
-        
-        recs = data.get('recommendations', [])
-        if recs:
-            elements += self._section_heading("Recommendations")
-            elements += self._bullet_list(recs)
+        elements += self._section_heading("Recommendations")
+        elements += self._bullet_list(resolve_recommendations(data) or ["No recommendations"])
 
         roadmap = data.get('reduction_roadmap')
         if roadmap:
@@ -649,11 +654,17 @@ class PDFExporter:
         ]))
         return [t, Spacer(1, 4*mm)]
 
+    def _format_gap(self, gap):
+        if isinstance(gap, dict):
+            title, detail = gap.get('gap'), gap.get('detail')
+            return f"{title}: {detail}" if title and detail else (title or detail or '—')
+        return str(gap)
+
     def _bullet_list(self, items):
         from reportlab.platypus import Paragraph, Spacer
         from reportlab.lib.styles import ParagraphStyle
         style = ParagraphStyle('Bullet', fontSize=10, fontName='Helvetica', leftIndent=12, spaceAfter=3)
-        elements = [Paragraph(f"• {item}", style) for item in items]
+        elements = [Paragraph(f"• {_xml_escape(str(item))}", style) for item in items]
         elements.append(Spacer(1, 4))
         return elements
 
