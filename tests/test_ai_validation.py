@@ -931,7 +931,8 @@ class TestAIMonitoringView:
         assert metrics["validations_review"] == 0
         assert metrics["active_validations"] == 0
         assert metrics["review_queue_size"] == 0
-        assert metrics["median_confidence"] == 78.5
+        assert metrics["avg_confidence"] == 78.5
+        assert metrics["median_confidence"] == metrics["avg_confidence"]
 
     def test_org_with_no_data_sees_zeros_despite_other_org_data(
         self, admin_client, org_b_validations
@@ -941,6 +942,7 @@ class TestAIMonitoringView:
         assert metrics["validations_failed"] == 0
         assert metrics["validations_invalid"] == 0
         assert metrics["review_queue_size"] == 0
+        assert metrics["avg_confidence"] == 0
         assert metrics["median_confidence"] == 0
 
     def test_failed_and_invalid_are_distinct(self, admin_client, vendor):

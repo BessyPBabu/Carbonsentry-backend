@@ -357,6 +357,7 @@ class AIMonitoringView(APIView):
                 "p95_duration_s":      None,
                 "gemini_success":      None,
                 "gemini_failed":       None,
+                "avg_confidence":      round(float(avg_conf), 1),
                 "median_confidence":   round(float(avg_conf), 1),
                 "active_validations":  qs.filter(status="processing").count(),
                 "review_queue_size":   queue_size,
