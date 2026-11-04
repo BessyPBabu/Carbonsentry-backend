@@ -16,6 +16,8 @@ _VCM_PRICE_LOW_USD  = 5.0
 _VCM_PRICE_HIGH_USD = 50.0
 _INR_PER_USD        = 83.0
 
+_INDIA_COUNTRY_NAMES = frozenset({'india', 'in', 'ind', 'bharat', 'republic of india'})
+
 # ── Industry sets ─────────────────────────────────────────────────────────────
 _CBAM_SECTORS = {
     'steel', 'iron', 'aluminium', 'aluminum', 'cement',
@@ -75,6 +77,10 @@ _REDUCTION_STRATEGIES = [
         'cost_level':  'none',
     },
 ]
+
+
+def _is_indian(country) -> bool:
+    return (country or '').strip().lower() in _INDIA_COUNTRY_NAMES
 
 
 def _industry_key(industry_name: str) -> str:
@@ -139,8 +145,7 @@ def generate_vendor_compliance_report(vendor, organization) -> VendorComplianceR
 
     industry_name = vendor.industry.name if vendor.industry else ''
     industry_key  = _industry_key(industry_name)
-    country       = (vendor.country or '').lower()
-    is_indian     = any(k in country for k in ('india', 'in'))
+    is_indian     = _is_indian(vendor.country)
 
     # ── 1. Regulatory applicability ──────────────────────────────────────────
     regulations = _build_regulations(industry_key, is_indian)
