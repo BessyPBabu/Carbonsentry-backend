@@ -1,6 +1,7 @@
 import logging
 from rest_framework import serializers
 from .models import Report
+from .schema import resolve_recommendations
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,15 @@ class ReportSerializer(serializers.ModelSerializer):
             "id", "status", "data", "generated_by", "generated_at",
             "approved_by", "approved_at",
         ]
+
+    def to_representation(self, instance):
+        rep = super().to_representation(instance)
+        data = rep.get("data")
+        if instance.report_type == "vendor_compliance_report" and isinstance(data, dict) and not data.get("recommendations"):
+            recs = resolve_recommendations(data)
+            if recs:
+                rep["data"] = {**data, "recommendations": recs}
+        return rep
 
     def get_generated_by_name(self, obj):
         if obj.generated_by:

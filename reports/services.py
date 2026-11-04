@@ -5,6 +5,7 @@ from xml.sax.saxutils import escape as _xml_escape
 from django.db.models import Avg, Count, Q, Sum
 
 from reports.compliance_engine import generate_vendor_compliance_report
+from reports.schema import resolve_recommendations
 
 logger = logging.getLogger(__name__)
 
@@ -449,11 +450,8 @@ class PDFExporter:
             elements += self._section_heading("Compliance Gaps")
             elements += self._bullet_list(gaps)
 
-        
-        recs = data.get('recommendations', [])
-        if recs:
-            elements += self._section_heading("Recommendations")
-            elements += self._bullet_list(recs)
+        elements += self._section_heading("Recommendations")
+        elements += self._bullet_list(resolve_recommendations(data) or ["No recommendations"])
 
         roadmap = data.get('reduction_roadmap')
         if roadmap:

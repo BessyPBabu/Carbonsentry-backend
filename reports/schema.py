@@ -195,3 +195,19 @@ EXPORTER_READS: Dict[str, FrozenSet[str]] = {
     "action_checklist": frozenset({"priority", "action", "owner", "urgency"}),
 }
 
+
+def resolve_recommendations(data) -> List[str]:
+    if not isinstance(data, dict):
+        return []
+
+    recs = data.get("recommendations")
+    if isinstance(recs, list) and recs:
+        return [r for r in recs if isinstance(r, str) and r.strip()]
+
+    items = data.get("action_checklist")
+    if isinstance(items, list):
+        return [
+            i["action"] for i in items
+            if isinstance(i, dict) and isinstance(i.get("action"), str) and i["action"].strip()
+        ]
+    return []
