@@ -961,6 +961,49 @@ class TestAIMonitoringView:
         assert metrics["validations_failed"] == 1
         assert metrics["validations_invalid"] == 1
 
+    def test_categories_are_mutually_exclusive(self, admin_client, vendor):
+        specs = (
+            ("completed", "valid",   {"requires_manual_review": False}),
+            ("completed", "invalid", {"requires_manual_review": False, "is_relevant": False}),
+            ("completed", "flagged", {"requires_manual_review": True}),
+            ("failed",    "invalid", {"requires_manual_review": True}),
+            ("processing", "uploaded", {}),
+        )
+        for i, (status_, doc_status, kwargs) in enumerate(specs):
+            doc = Document.objects.create(
+                vendor=vendor, document_type=DocumentType.objects.create(name=f"M{i}"),
+                status=doc_status,
+            )
+            DocumentValidation.objects.create(
+                document=doc, status=status_, started_at=timezone.now(), **kwargs,
+            )
+        metrics = admin_client.get(MONITORING_URL).data["metrics"]
+        assert metrics["validations_valid"] == 1
+        assert metrics["validations_invalid"] == 1
+        assert metrics["validations_review"] == 1
+        assert metrics["validations_failed"] == 1
+        assert metrics["active_validations"] == 1
+        total = sum(metrics[k] for k in (
+            "validations_valid", "validations_invalid", "validations_review",
+            "validations_failed", "active_validations",
+        ))
+        assert total == DocumentValidation.objects.count()
+
+    def test_rejected_review_counts_as_invalid_only(self, admin_client, flagged_validation, review_item):
+        res = admin_client.post(review_resolve_url(review_item.id), {"decision": "rejected"}, format="json")
+        assert res.status_code == 200
+        metrics = admin_client.get(MONITORING_URL).data["metrics"]
+        assert metrics["validations_invalid"] == 1
+        assert metrics["validations_review"] == 0
+        assert metrics["validations_valid"] == 0
+
+    def test_approved_review_counts_as_valid_only(self, admin_client, flagged_validation, review_item):
+        admin_client.post(review_resolve_url(review_item.id), {"decision": "approved"}, format="json")
+        metrics = admin_client.get(MONITORING_URL).data["metrics"]
+        assert metrics["validations_valid"] == 1
+        assert metrics["validations_review"] == 0
+        assert metrics["validations_invalid"] == 0
+
     def test_from_db_without_organization_returns_no_data(self, completed_validation, org_b_validations):
         from ai_validation.views import AIMonitoringView
         assert AIMonitoringView()._from_db(None) == {}

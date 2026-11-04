@@ -329,7 +329,11 @@ class AIMonitoringView(APIView):
         try:
             qs = DocumentValidation.objects.filter(document__vendor__organization=organization)
 
+            invalid_q = Q(is_relevant=False) | Q(document__status="invalid")
             completed = qs.filter(status="completed")
+            settled = completed.exclude(invalid_q)
+            review = settled.filter(requires_manual_review=True).exclude(document__status="valid")
+            valid = settled.filter(Q(requires_manual_review=False) | Q(document__status="valid"))
             avg_conf = (
                 qs.filter(overall_confidence__isnull=False)
                 .aggregate(avg=Avg("overall_confidence"))["avg"]
@@ -342,11 +346,9 @@ class AIMonitoringView(APIView):
             ).count()
 
             return {
-                "validations_valid":   completed.filter(requires_manual_review=False).count(),
-                "validations_invalid": completed.filter(
-                    Q(is_relevant=False) | Q(document__status="invalid")
-                ).count(),
-                "validations_review":  qs.filter(requires_manual_review=True).count(),
+                "validations_valid":   valid.count(),
+                "validations_invalid": completed.filter(invalid_q).count(),
+                "validations_review":  review.count(),
                 "validations_failed":  qs.filter(status="failed").count(),
                 "p95_duration_s":      None,
                 "gemini_success":      None,
