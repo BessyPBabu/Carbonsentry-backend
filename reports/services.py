@@ -415,8 +415,8 @@ class PDFExporter:
                 [
                     d.get('document_type', '—'),
                     d.get('document_status', '—'),
-                    f"{d['confidence']:.1f}%" if d.get('confidence') else '—',
-                    f"{d['co2_extracted']:,.2f}" if d.get('co2_extracted') else '—',
+                    f"{d['confidence']:.1f}%" if d.get('confidence') is not None else '—',
+                    f"{d['co2_extracted']:,.2f}" if d.get('co2_extracted') is not None else '—',
                     "Met" if d.get('assurance_met') else "Not met",
                 ]
                 for d in doc_details
@@ -439,10 +439,10 @@ class PDFExporter:
                 if e.get('detail'):
                     rows.append(("Detail", e['detail']))
                 fe = e.get('financial_exposure') or {}
-                if fe.get('eur'):
+                if fe.get('eur') is not None:
                     rows.append(("Estimated CBAM Cost (EUR)", f"EUR {fe['eur']:,.2f}"))
                     rows.append(("Estimated CBAM Cost (INR)", f"INR {fe.get('inr', 0):,.2f}"))
-                elif fe.get('inr'):
+                elif fe.get('inr') is not None:
                     rows.append(("Max NGT Penalty", f"INR {fe['inr']:,.0f}"))
                 elements += self._kv_table(rows)
 

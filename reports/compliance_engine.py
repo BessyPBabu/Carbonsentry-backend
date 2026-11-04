@@ -117,6 +117,13 @@ def _get_threshold(industry_name: str) -> dict:
     return DEFAULT_THRESHOLDS['default']
 
 
+def _first_number(*values) -> float:
+    for v in values:
+        if v is not None:
+            return v
+    return 0.0
+
+
 def _reasonable_assurance(confidence: float) -> bool:
     return confidence >= 75.0
 
@@ -165,20 +172,22 @@ def generate_vendor_compliance_report(vendor, organization) -> VendorComplianceR
         document__vendor=vendor
     ).select_related('document', 'document__document_type', 'metadata')
 
-    avg_conf_raw = validations.aggregate(avg=Avg('overall_confidence'))['avg'] or 0
-    avg_confidence = float(avg_conf_raw)
+    avg_conf_raw = validations.aggregate(avg=Avg('overall_confidence'))['avg']
+    avg_confidence = float(avg_conf_raw) if avg_conf_raw is not None else 0.0
     ra_met         = _reasonable_assurance(avg_confidence)
 
     doc_details = []
     for v in validations.all():
         meta = getattr(v, 'metadata', None)
+        confidence = float(v.overall_confidence) if v.overall_confidence is not None else None
+        co2_value  = float(meta.co2_value) if meta is not None and meta.co2_value is not None else None
         doc_details.append({
             'document_type':         v.document.document_type.name,
             'document_status':       v.document.status,
             'validation_status':     v.status,
-            'confidence':            float(v.overall_confidence) if v.overall_confidence else None,
-            'assurance_met':         _reasonable_assurance(float(v.overall_confidence or 0)),
-            'co2_extracted':         float(meta.co2_value) if meta and meta.co2_value else None,
+            'confidence':            confidence,
+            'assurance_met':         _reasonable_assurance(confidence if confidence is not None else 0.0),
+            'co2_extracted':         co2_value,
             'co2_unit':              meta.co2_unit if meta else None,
             'issuing_authority':     meta.issuing_authority if meta else None,
             'cert_number':           meta.certificate_number if meta else None,
@@ -191,12 +200,12 @@ def generate_vendor_compliance_report(vendor, organization) -> VendorComplianceR
     # ── 3. Emissions ──────────────────────────────────────────────────────────
     try:
         rp = VendorRiskProfile.objects.get(vendor=vendor)
-        total_co2     = float(rp.total_co2_emissions or 0)
+        reported_co2  = float(rp.total_co2_emissions) if rp.total_co2_emissions is not None else None
         risk_score    = float(rp.risk_score) if rp.risk_score is not None else None
         risk_level    = rp.risk_level
         exceeds       = rp.exceeds_threshold
     except VendorRiskProfile.DoesNotExist:
-        total_co2  = 0.0
+        reported_co2 = None
         risk_score = None
         risk_level = 'unknown'
         exceeds    = False
@@ -206,12 +215,14 @@ def generate_vendor_compliance_report(vendor, organization) -> VendorComplianceR
         d['co2_extracted'] for d in doc_details
         if d['co2_extracted'] is not None
     ]
-    extracted_total = sum(extracted_values) if extracted_values else 0
-    emission_band   = _emission_band(extracted_total or total_co2, industry_name)
+    extracted_total = sum(extracted_values) if extracted_values else None
+    total_co2       = _first_number(reported_co2)
+    reported_total  = _first_number(reported_co2, extracted_total)
+    emission_band   = _emission_band(_first_number(extracted_total, reported_co2), industry_name)
 
     # ── 4. Regulatory risk exposure ───────────────────────────────────────────
     exposure = _build_exposure(
-        industry_key, is_indian, total_co2, extracted_total,
+        industry_key, is_indian, reported_total,
         avg_confidence, ra_met, doc_counts, exceeds,
     )
 
@@ -222,8 +233,8 @@ def generate_vendor_compliance_report(vendor, organization) -> VendorComplianceR
     reduction_roadmap = None
     carbon_credit_guidance = None
     if emission_band in ('high', 'critical') or exceeds:
-        reduction_roadmap      = _build_reduction_roadmap(total_co2 or extracted_total, industry_name)
-        carbon_credit_guidance = _build_carbon_credit_guidance(total_co2 or extracted_total)
+        reduction_roadmap      = _build_reduction_roadmap(reported_total, industry_name)
+        carbon_credit_guidance = _build_carbon_credit_guidance(reported_total)
 
     # ── 7. Vendor retention recommendation ───────────────────────────────────
     recommendation = _build_retention_recommendation(
@@ -258,8 +269,8 @@ def generate_vendor_compliance_report(vendor, organization) -> VendorComplianceR
             'document_details':         doc_details,
         },
         'scope_emissions': {
-            'total_co2_tonnes':    round(total_co2 or extracted_total, 2),
-            'extracted_from_docs': round(extracted_total, 2),
+            'total_co2_tonnes':    round(reported_total, 2),
+            'extracted_from_docs': round(_first_number(extracted_total), 2),
             'unit':                'tonnes CO2e',
             'emission_band':       emission_band,
             'risk_score':          round(risk_score, 1) if risk_score is not None else None,
@@ -326,11 +337,10 @@ def _build_regulations(industry_key: str, is_indian: bool) -> list:
 
 
 def _build_exposure(
-    industry_key, is_indian, total_co2, extracted_total, avg_confidence, ra_met, doc_counts,
+    industry_key, is_indian, co2_for_calc, avg_confidence, ra_met, doc_counts,
     exceeds_threshold=False,
 ) -> list:
     exposure = []
-    co2_for_calc = total_co2 or extracted_total
 
     if industry_key in _SEBI_SECTORS:
         exposure.append({
