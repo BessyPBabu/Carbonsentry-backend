@@ -863,31 +863,176 @@ class TestValidateDocumentTask:
 
 # ── AIMonitoring view ─────────────────────────────────────────────────────────
 
+@pytest.fixture
+def org_b_validations(industry, doc_type):
+    from accounts.models import Organization
+    from accounts.utils.email_verification import generate_verification_token, hash_token
+    org_b = Organization.objects.create(
+        name="Org B", industry="Tech", country="India",
+        primary_email="b@orgb.com", is_verified=True,
+        email_verification_token=hash_token(generate_verification_token()),
+    )
+    vendor_b = Vendor.objects.create(
+        organization=org_b, name="B Vendor", industry=industry,
+        country="USA", contact_email="b@vendor.com",
+    )
+    created = []
+    for i, (status_, kwargs) in enumerate((
+        ("completed", {"requires_manual_review": False}),
+        ("failed", {}),
+        ("processing", {}),
+        ("completed", {"requires_manual_review": True}),
+    )):
+        dt = DocumentType.objects.create(name=f"B Type {i}")
+        doc = Document.objects.create(vendor=vendor_b, document_type=dt, status="uploaded")
+        created.append(DocumentValidation.objects.create(
+            document=doc, status=status_, started_at=timezone.now(),
+            overall_confidence=Decimal("10.00"), **kwargs,
+        ))
+    ManualReviewQueue.objects.create(
+        document_validation=created[-1], priority="high", reason="B only", status="pending",
+    )
+    return org_b
+
+
 @pytest.mark.django_db
 class TestAIMonitoringView:
 
-    def test_authenticated_user_can_access(self, admin_client):
+    def test_admin_can_access(self, admin_client):
         res = admin_client.get(MONITORING_URL)
         assert res.status_code == 200
 
     def test_unauthenticated_blocked(self, anon_client):
         assert anon_client.get(MONITORING_URL).status_code == 401
 
+    def test_officer_forbidden(self, officer_client):
+        assert officer_client.get(MONITORING_URL).status_code == 403
+
+    def test_viewer_forbidden(self, viewer_client):
+        assert viewer_client.get(MONITORING_URL).status_code == 403
+
     def test_response_has_metrics_key(self, admin_client):
         res = admin_client.get(MONITORING_URL)
         assert "metrics" in res.data
 
-    def test_response_has_source_key(self, admin_client):
-        res = admin_client.get(MONITORING_URL)
-        assert "source" in res.data
-        assert res.data["source"] in ("prometheus", "database")
-
-    def test_db_fallback_when_no_prometheus_url(self, admin_client, completed_validation, settings):
-        settings.PROMETHEUS_URL = ""
-        res = admin_client.get(MONITORING_URL)
-        assert res.status_code == 200
+    def test_source_is_always_database(self, admin_client, settings):
+        settings.PROMETHEUS_URL = "http://prometheus:9090"
+        with patch("requests.get") as mock_get:
+            res = admin_client.get(MONITORING_URL)
         assert res.data["source"] == "database"
-        assert "validations_valid" in res.data["metrics"]
+        mock_get.assert_not_called()
+
+    def test_metrics_scoped_to_own_organization(
+        self, admin_client, completed_validation, org_b_validations
+    ):
+        metrics = admin_client.get(MONITORING_URL).data["metrics"]
+        assert metrics["validations_valid"] == 1
+        assert metrics["validations_failed"] == 0
+        assert metrics["validations_review"] == 0
+        assert metrics["active_validations"] == 0
+        assert metrics["review_queue_size"] == 0
+        assert metrics["median_confidence"] == 78.5
+
+    def test_org_with_no_data_sees_zeros_despite_other_org_data(
+        self, admin_client, org_b_validations
+    ):
+        metrics = admin_client.get(MONITORING_URL).data["metrics"]
+        assert metrics["validations_valid"] == 0
+        assert metrics["validations_failed"] == 0
+        assert metrics["validations_invalid"] == 0
+        assert metrics["review_queue_size"] == 0
+        assert metrics["median_confidence"] == 0
+
+    def test_failed_and_invalid_are_distinct(self, admin_client, vendor):
+        failed_doc = Document.objects.create(
+            vendor=vendor, document_type=DocumentType.objects.create(name="T1"), status="invalid",
+        )
+        DocumentValidation.objects.create(
+            document=failed_doc, status="failed", started_at=timezone.now(),
+        )
+        irrelevant_doc = Document.objects.create(
+            vendor=vendor, document_type=DocumentType.objects.create(name="T2"), status="uploaded",
+        )
+        DocumentValidation.objects.create(
+            document=irrelevant_doc, status="completed", started_at=timezone.now(),
+            is_relevant=False,
+        )
+        metrics = admin_client.get(MONITORING_URL).data["metrics"]
+        assert metrics["validations_failed"] == 1
+        assert metrics["validations_invalid"] == 1
+
+    def test_categories_are_mutually_exclusive(self, admin_client, vendor):
+        specs = (
+            ("completed", "valid",   {"requires_manual_review": False}),
+            ("completed", "invalid", {"requires_manual_review": False, "is_relevant": False}),
+            ("completed", "flagged", {"requires_manual_review": True}),
+            ("failed",    "invalid", {"requires_manual_review": True}),
+            ("processing", "uploaded", {}),
+        )
+        for i, (status_, doc_status, kwargs) in enumerate(specs):
+            doc = Document.objects.create(
+                vendor=vendor, document_type=DocumentType.objects.create(name=f"M{i}"),
+                status=doc_status,
+            )
+            DocumentValidation.objects.create(
+                document=doc, status=status_, started_at=timezone.now(), **kwargs,
+            )
+        metrics = admin_client.get(MONITORING_URL).data["metrics"]
+        assert metrics["validations_valid"] == 1
+        assert metrics["validations_invalid"] == 1
+        assert metrics["validations_review"] == 1
+        assert metrics["validations_failed"] == 1
+        assert metrics["active_validations"] == 1
+        total = sum(metrics[k] for k in (
+            "validations_valid", "validations_invalid", "validations_review",
+            "validations_failed", "active_validations",
+        ))
+        assert total == DocumentValidation.objects.count()
+
+    def test_rejected_review_counts_as_invalid_only(self, admin_client, flagged_validation, review_item):
+        res = admin_client.post(review_resolve_url(review_item.id), {"decision": "rejected"}, format="json")
+        assert res.status_code == 200
+        metrics = admin_client.get(MONITORING_URL).data["metrics"]
+        assert metrics["validations_invalid"] == 1
+        assert metrics["validations_review"] == 0
+        assert metrics["validations_valid"] == 0
+
+    def test_approved_review_counts_as_valid_only(self, admin_client, flagged_validation, review_item):
+        admin_client.post(review_resolve_url(review_item.id), {"decision": "approved"}, format="json")
+        metrics = admin_client.get(MONITORING_URL).data["metrics"]
+        assert metrics["validations_valid"] == 1
+        assert metrics["validations_review"] == 0
+        assert metrics["validations_invalid"] == 0
+
+    def test_db_error_returns_empty_metrics_and_logs(self, admin_client):
+        with patch(
+            "ai_validation.views.DocumentValidation.objects.filter",
+            side_effect=Exception("db down"),
+        ), patch("ai_validation.views.logger") as mock_logger:
+            res = admin_client.get(MONITORING_URL)
+        assert res.status_code == 200
+        assert res.data["metrics"] == {}
+        mock_logger.exception.assert_called_once()
+
+    def test_from_db_without_organization_returns_no_data(self, completed_validation, org_b_validations):
+        from ai_validation.views import AIMonitoringView
+        assert AIMonitoringView()._from_db(None) == {}
+
+    def test_grafana_url_hidden_from_non_staff_admin(self, admin_client, settings):
+        settings.GRAFANA_URL = "https://grafana.example.com"
+        assert admin_client.get(MONITORING_URL).data["grafana_url"] is None
+
+    def test_grafana_url_returned_to_staff(self, admin_user, admin_client, settings):
+        settings.GRAFANA_URL = "https://grafana.example.com"
+        admin_user.is_staff = True
+        admin_user.save(update_fields=["is_staff"])
+        assert admin_client.get(MONITORING_URL).data["grafana_url"] == "https://grafana.example.com"
+
+    def test_grafana_url_none_when_unset_for_staff(self, admin_user, admin_client, settings):
+        settings.GRAFANA_URL = ""
+        admin_user.is_superuser = True
+        admin_user.save(update_fields=["is_superuser"])
+        assert admin_client.get(MONITORING_URL).data["grafana_url"] is None
 
 
 # ── IndustryEmissionThreshold ─────────────────────────────────────────────────

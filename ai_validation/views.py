@@ -1,15 +1,14 @@
 import logging
-import requests as http_requests
 
 from django.conf import settings
-from django.db.models import Avg
+from django.db.models import Avg, Q
 from django.utils import timezone
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from accounts.permissions import IsAdminOrOfficer
+from accounts.permissions import IsAdmin, IsAdminOrOfficer
 from .models import DocumentValidation, VendorRiskProfile, ManualReviewQueue, AIAuditLog, IndustryEmissionThreshold
 from .serializers import (
     DocumentValidationSerializer,
@@ -308,97 +307,48 @@ class ManualReviewQueueViewSet(viewsets.ModelViewSet):
 
 
 class AIMonitoringView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    _PROMETHEUS_QUERIES = {
-        "validations_valid":   'carbonsentry_validations_total{status="valid"}',
-        "validations_invalid": 'carbonsentry_validations_total{status="failed"}',
-        "validations_review":  'carbonsentry_validations_total{status="manual_review"}',
-        "validations_failed":  'carbonsentry_validations_total{status="failed"}',
-        "p95_duration_s":      "histogram_quantile(0.95, rate(carbonsentry_validation_duration_seconds_bucket[1h]))",
-        "gemini_success":      'sum(carbonsentry_gemini_calls_total{success="true"})',
-        "gemini_failed":       'sum(carbonsentry_gemini_calls_total{success="false"})',
-        "median_confidence":   "histogram_quantile(0.50, rate(carbonsentry_confidence_score_bucket[1h]))",
-        "active_validations":  "carbonsentry_active_validations",
-        "review_queue_size":   "carbonsentry_manual_review_queue_size",
-    }
+    permission_classes = [IsAuthenticated, IsAdmin]
 
     def get(self, request):
         if not hasattr(request.user, "organization"):
             return Response({"error": "No organization found"}, status=status.HTTP_403_FORBIDDEN)
 
-        prometheus_url = getattr(settings, "PROMETHEUS_URL", "").strip()
-        grafana_url = getattr(settings, "GRAFANA_URL", "").strip()
-
-        if prometheus_url:
-            metrics, source = self._from_prometheus(prometheus_url)
-        else:
-            metrics, source = self._from_db(request.user.organization), "database"
+        grafana_url = None
+        if request.user.is_staff or request.user.is_superuser:
+            grafana_url = getattr(settings, "GRAFANA_URL", "").strip() or None
 
         return Response({
-            "source": source,
-            "grafana_url": grafana_url or None,
-            "metrics": metrics,
+            "source": "database",
+            "grafana_url": grafana_url,
+            "metrics": self._from_db(request.user.organization),
         })
 
-    def _from_prometheus(self, base_url):
-        results = {}
-        failed_queries = []
-
-        for key, query in self._PROMETHEUS_QUERIES.items():
-            try:
-                resp = http_requests.get(
-                    f"{base_url}/api/v1/query",
-                    params={"query": query},
-                    timeout=3,
-                )
-                if resp.ok:
-                    data = resp.json().get("data", {}).get("result", [])
-                    results[key] = round(float(data[0]["value"][1]), 2) if data else 0
-                else:
-                    results[key] = 0
-                    failed_queries.append(key)
-            except Exception as exc:
-                logger.warning("AIMonitoringView._from_prometheus: %s failed — %s", key, exc)
-                results[key] = 0
-                failed_queries.append(key)
-
-        if failed_queries:
-            logger.warning(
-                "AIMonitoringView._from_prometheus: %d queries failed: %s",
-                len(failed_queries), failed_queries,
-            )
-
-        # if all queries failed, fall back to DB
-        if len(failed_queries) == len(self._PROMETHEUS_QUERIES):
-            logger.warning("AIMonitoringView: all Prometheus queries failed, using DB fallback")
-            db_metrics = self._from_db(None)
-            return db_metrics, "database"
-
-        return results, "prometheus"
-
     def _from_db(self, organization):
+        if organization is None:
+            return {}
         try:
-            qs = DocumentValidation.objects.all()
-            if organization:
-                qs = qs.filter(document__vendor__organization=organization)
+            qs = DocumentValidation.objects.filter(document__vendor__organization=organization)
 
+            invalid_q = Q(is_relevant=False) | Q(document__status="invalid")
             completed = qs.filter(status="completed")
+            settled = completed.exclude(invalid_q)
+            review = settled.filter(requires_manual_review=True).exclude(document__status="valid")
+            valid = settled.filter(Q(requires_manual_review=False) | Q(document__status="valid"))
             avg_conf = (
                 qs.filter(overall_confidence__isnull=False)
-                .aggregate(avg=Avg("overall_confidence"))["avg"] or 0
+                .aggregate(avg=Avg("overall_confidence"))["avg"]
             )
-            queue_size = ManualReviewQueue.objects.filter(status="pending").count()
-            if organization:
-                queue_size = ManualReviewQueue.objects.filter(
-                    status="pending",
-                    document_validation__document__vendor__organization=organization,
-                ).count()
+            if avg_conf is None:
+                avg_conf = 0
+            queue_size = ManualReviewQueue.objects.filter(
+                status="pending",
+                document_validation__document__vendor__organization=organization,
+            ).count()
 
             return {
-                "validations_valid":   completed.filter(requires_manual_review=False).count(),
-                "validations_invalid": qs.filter(status="failed").count(),
-                "validations_review":  qs.filter(requires_manual_review=True).count(),
+                "validations_valid":   valid.count(),
+                "validations_invalid": completed.filter(invalid_q).count(),
+                "validations_review":  review.count(),
                 "validations_failed":  qs.filter(status="failed").count(),
                 "p95_duration_s":      None,
                 "gemini_success":      None,
@@ -410,6 +360,7 @@ class AIMonitoringView(APIView):
         except Exception:
             logger.exception("AIMonitoringView._from_db: error")
             return {}
+
 
 class IndustryEmissionThresholdListView(APIView):
     permission_classes = [IsAuthenticated]
